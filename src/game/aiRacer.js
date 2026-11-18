@@ -1,0 +1,456 @@
+// ============================================================================
+// aiRacer.js — Monaco GP: Street Circuit Challenge
+// 7 rival F1 cars: grid spawn, waypoint pure-pursuit navigation, kinematic
+// braking plans before hairpins, lateral overtaking / anti-stack avoidance,
+// DRS on straights, checkpoint-validated lap counting and live 1st–8th
+// ranking for the player AND every AI car.
+// ============================================================================
+
+import * as THREE from 'three';
+import { createF1Car, updateCarPhysics } from './carPhysics.js';
+
+const TOTAL_LAPS = 3;
+const TOP_SPEED = 86;            // must match carPhysics.js (m/s)
+const PLAN_BRK = 26;             // conservative planning brake decel (m/s²)
+const A0 = 1.7 * 9.81;           // low-speed lateral grip (matches physics)
+const A1 = (3.1 * 9.81) / (TOP_SPEED * TOP_SPEED); // downforce grip slope
+const SEP_RADIUS = 4.6;          // soft car-car separation radius (m)
+
+const TEAMS = [
+  { color: 0x00d2be, team: 'Teal Arrow GP',   driver: 'L. Moreau'  },
+  { color: 0xff8000, team: 'Papaya Speed',    driver: 'K. Tanaka'  },
+  { color: 0x006f62, team: 'Verde Racing',    driver: 'S. Rossi'   },
+  { color: 0x3b82f6, team: 'Azzurra Corse',   driver: 'A. Silva'   },
+  { color: 0xfacc15, team: 'Giallo Motors',   driver: 'M. Weber'   },
+  { color: 0xa855f7, team: 'Viola Grand Prix', driver: 'D. Costa'  },
+  { color: 0xf472b6, team: 'Rose Racing',     driver: 'N. Laurent' },
+];
+
+const PLAYER_ID = { color: 0xe10600, team: 'Scuderia Monaco', driver: 'YOU' };
+
+// Per-track caches (no global state leaks between restarts / scenes)
+const sessions = new WeakMap();
+const profiles = new WeakMap();
+
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+// --- race session (start lights → racing → finished) -------------------------
+function getSession(trackData) {
+  let s = sessions.get(trackData);
+  if (!s) { s = {}; sessions.set(trackData, s); resetSession(s); }
+  return s;
+}
+function resetSession(s) {
+  s.phase = 'LIGHTS';            // 'LIGHTS' | 'RACING' | 'FINISHED'
+  s.clock = 0;
+  s.lightsOn = 0;
+  s.hold = 0.7 + Math.random() * 0.8;   // random lights-out hold (F1 style)
+  s.outAt = 6.0 + s.hold;
+  s.raceTime = 0;
+  s.finishedCount = 0;
+}
+function advanceSession(s, dt) {
+  s.clock += dt;
+  if (s.phase === 'LIGHTS') {
+    const lt = s.clock - 1.0;
+    s.lightsOn = lt < 0 ? 0 : Math.min(5, Math.floor(lt) + 1);
+    if (s.clock >= s.outAt) { s.phase = 'RACING'; s.lightsOn = 0; s.raceTime = 0; }
+  } else {
+    s.raceTime += dt;
+  }
+}
+
+// --- precomputed corner-speed profile (curvature → grip-limited speed) --------
+function getProfile(trackData) {
+  let p = profiles.get(trackData);
+  if (p) return p;
+  const sd = trackData.trackCurve.userData.samples;
+  const N = sd.count, segLen = trackData.trackCurve.userData.length / N;
+  const curv = new Float32Array(N);
+  const sign = new Float32Array(N);
+  const corner2 = new Float32Array(N);   // squared corner speed limit
+  for (let i = 0; i < N; i++) {
+    const t0 = sd.tan[i], t1 = sd.tan[(i + 3) % N];
+    const k = t0.angleTo(t1) / (3 * segLen);
+    curv[i] = k;
+    sign[i] = Math.sign(t0.z * t1.x - t0.x * t1.z); // + = left-hand corner
+    // implicit grip solution: v² = (A0 + A1·v²) / κ  →  v² = A0 / (κ − A1)
+    const denom = k - A1;
+    const v = denom > 1e-5 ? Math.min(92, Math.sqrt(A0 / denom)) : 92;
+    corner2[i] = Math.max(10, v) ** 2;
+  }
+  p = { curv, sign, corner2, N, segLen };
+  profiles.set(trackData, p);
+  return p;
+}
+
+// --- grid placement + race metadata -------------------------------------------
+function freshRace(car, u) {
+  const P = car.userData.physics;
+  const isPlayer = !!car.userData.isPlayer;
+  const id = isPlayer ? PLAYER_ID : car.userData;
+  return {
+    u, prevU: u, lateral: 0, latTarget: 0,
+    lap: 0, nextCp: 0, lapsCompleted: 0, lapStart: 0,
+    lastLapTime: null, bestLapTime: null,
+    finished: false, finishTime: null,
+    lastCheckpoint: null,
+    yawRate: 0, prevYaw: P.yaw, throttle: 0, brake: 1, drs: false,
+    progress: 0, position: (car.userData.gridSlot ?? 0) + 1,
+    gap: 0, gapText: '',
+    traffic: { blockDist: Infinity, blocker: null, blockLat: 0, blockSpeed: 0, sidePush: 0 },
+    entry: {
+      position: 0, name: id.driver || 'YOU', team: id.team || 'Scuderia Monaco',
+      color: '#' + new THREE.Color(id.color ?? PLAYER_ID.color).getHexString(),
+      isPlayer, gridSlot: car.userData.gridSlot ?? 0,
+      lap: 1, lapsCompleted: 0, progress: 0, gap: 0, gapText: '',
+      bestLapTime: null, lastLapTime: null, currentLapTime: 0,
+      finished: false, finishTime: null, speedKmh: 0, drsActive: false,
+    },
+  };
+}
+
+export function placeCarOnGrid(car, trackData, slot) {
+  const sd = trackData.trackCurve.userData.samples;
+  const startU = trackData.startFinishLine.u;
+  const u = (startU - 0.004 - slot * 0.0035 + 1) % 1;   // matches painted grid boxes
+  const idx = Math.round(u * sd.count) % sd.count;
+  const p = sd.pos[idx], r = sd.right[idx], t = sd.tan[idx];
+  const side = slot % 2 ? 1 : -1;
+  car.position.set(p.x + r.x * side * 2.3, p.y, p.z + r.z * side * 2.3);
+
+  const P = car.userData.physics;
+  P.speed = 0; P.slip = 0; P.hit = 0; P.steerVis = 0;
+  P.u = u; P.lastIdx = idx;
+  P.yaw = Math.atan2(-t.x, -t.z);
+  P.initialized = true;
+  car.rotation.order = 'YXZ';
+  car.rotation.set(Math.asin(clamp(t.y, -1, 1)), P.yaw, 0);
+
+  car.userData.gridSlot = slot;
+  if (car.userData.isPlayer && !car.userData.team) {
+    car.userData.team = PLAYER_ID.team;
+    car.userData.driver = PLAYER_ID.driver;
+    car.userData.color = PLAYER_ID.color;
+  }
+  car.userData.race = freshRace(car, u);
+  car.userData.race.lateral = side * 2.3;
+  car.userData.race.latTarget = side * 2.3;
+}
+
+function ensureRace(car, trackData) {
+  if (!car.userData.race) {
+    const P = car.userData.physics;
+    car.userData.race = freshRace(car, P.u || trackData.startFinishLine.u);
+  }
+}
+
+// --- spawn 7 rivals behind the player ------------------------------------------
+export function initAIRacers(scene, trackData) {
+  resetSession(getSession(trackData));
+  const aiList = [];
+  TEAMS.forEach((team, i) => {
+    const car = createF1Car(team.color, false);
+    car.userData.team = team.team;
+    car.userData.driver = team.driver;
+    car.userData.color = team.color;
+    car.userData.ai = {
+      top: 0.965 - i * 0.009,          // front grid = slightly faster (quali order)
+      corner: 0.97 - i * 0.007,
+      lane: ((i % 3) - 1) * 1.1,       // preferred straight-line lane
+    };
+    scene.add(car);
+    placeCarOnGrid(car, trackData, i + 1);   // slots 1..7, player holds pole (0)
+    aiList.push(car);
+  });
+  return aiList;
+}
+
+export function restartRace(allCars, trackData) {
+  resetSession(getSession(trackData));
+  allCars.forEach((car, i) => placeCarOnGrid(car, trackData, car.userData.gridSlot ?? i));
+}
+
+// --- localization ----------------------------------------------------------------
+function localize(car, sd) {
+  const P = car.userData.physics, R = car.userData.race;
+  const i = P.lastIdx, p = sd.pos[i], r = sd.right[i];
+  R.u = P.u;
+  R.lateral = (car.position.x - p.x) * r.x + (car.position.z - p.z) * r.z;
+}
+
+// --- traffic scan: nearest blocker ahead + side-by-side push ----------------------
+function scanTraffic(car, cars, length) {
+  const R = car.userData.race;
+  const t = R.traffic;
+  t.blockDist = Infinity; t.blocker = null; t.blockLat = 0; t.blockSpeed = 0; t.sidePush = 0;
+  for (const other of cars) {
+    if (other === car) continue;
+    const oR = other.userData.race;
+    if (!oR) continue;
+    const du = (oR.u - R.u + 1) % 1;
+    const ahead = du < 0.5;
+    const dist = (ahead ? du : 1 - du) * length;
+    const latDiff = oR.lateral - R.lateral;
+    if (ahead && dist < 30 && Math.abs(latDiff) < 3.2 && dist < t.blockDist) {
+      t.blockDist = dist; t.blocker = other;
+      t.blockLat = oR.lateral; t.blockSpeed = other.userData.physics.speed;
+    }
+    if (dist < 6.5 && Math.abs(latDiff) < 2.7) {
+      t.sidePush += (latDiff >= 0 ? -1 : 1) * (2.7 - Math.abs(latDiff)) * 0.45;
+    }
+  }
+  return t;
+}
+
+// --- AI driver: speed plan + pure-pursuit steering + overtaking + DRS --------------
+function computeAIControls(car, cars, trackData, prof, session, dt) {
+  const P = car.userData.physics, R = car.userData.race, skill = car.userData.ai;
+  const sd = trackData.trackCurve.userData.samples;
+  const halfWidth = trackData.trackCurve.userData.halfWidth;
+  const length = trackData.trackCurve.userData.length;
+  const tunnel = trackData.trackCurve.userData.tunnel;
+  const idx = P.lastIdx;
+
+  // hold on the grid until lights out
+  if (session.phase === 'LIGHTS') {
+    R.prevYaw = P.yaw;
+    return { throttle: 0, brake: 1, steer: 0, drs: false };
+  }
+
+  const speed = P.speed;
+  const inTunnelNow = P.u >= tunnel.uStart && P.u <= tunnel.uEnd;
+
+  // ---- kinematic speed plan: brake in time for every corner ahead -------------
+  let inZone = false;
+  for (const z of trackData.drsZones) if (P.u >= z.uStart && P.u <= z.uEnd) { inZone = true; break; }
+  const drsNow = R.drs && inZone;
+  let target = TOP_SPEED * skill.top * (drsNow ? 1.1 : 1);
+  if (R.finished) target = 12.5;   // cool-down lap after the flag
+
+  const horizon = Math.min(prof.N - 1, Math.ceil((speed * speed / (2 * PLAN_BRK) + 45) / prof.segLen));
+  const cs2 = skill.corner * skill.corner;
+  for (let k = 0; k <= horizon; k += 2) {
+    const j = (idx + k) % prof.N;
+    const allowed = Math.sqrt(prof.corner2[j] * cs2 + 2 * PLAN_BRK * k * prof.segLen);
+    if (allowed < target) target = allowed;
+  }
+
+  // ---- lateral plan: racing line + overtaking / avoidance ----------------------
+  const traffic = scanTraffic(car, cars, length);
+  const aheadIdx = (idx + Math.round(25 / prof.segLen)) % prof.N;
+  let latGoal = prof.curv[aheadIdx] > 0.006 ? -prof.sign[aheadIdx] * 1.5 : skill.lane;
+
+  if (!R.finished && traffic.blocker && traffic.blockDist < 24) {
+    const closing = speed > traffic.blockSpeed + 0.5 || traffic.blockDist < 12;
+    if (closing && (!inTunnelNow || traffic.blockDist < 10)) {
+      const lim = halfWidth - 1.9;
+      let side = traffic.blockLat >= 0 ? -1 : 1;
+      let lane = traffic.blockLat + side * 3.4;
+      if (Math.abs(lane) > lim || Math.abs(lane - traffic.blockLat) < 2.4) {
+        side = -side; lane = traffic.blockLat + side * 3.4;
+      }
+      latGoal = clamp(lane, -lim, lim);
+    }
+  }
+  latGoal = clamp(latGoal + traffic.sidePush, -(halfWidth - 1.7), halfWidth - 1.7);
+  if (R.finished) latGoal = skill.lane * 0.3;
+  R.latTarget += (latGoal - R.latTarget) * Math.min(1, 1.8 * dt);
+
+  // follow the blocker until the overtake lane is actually open
+  if (!R.finished && traffic.blocker && traffic.blockDist < 10 &&
+      Math.abs(R.latTarget - traffic.blockLat) < 2.5) {
+    target = Math.min(target, traffic.blockSpeed + (traffic.blockDist < 5 ? 0 : 1.2));
+  }
+
+  // ---- throttle / brake from speed error ---------------------------------------
+  const err = target - speed;
+  let tT, bT;
+  if (err > 0.8) { tT = 1; bT = 0; }
+  else if (err < -1.2) { tT = 0; bT = clamp(-err / 10, 0.15, 1); }
+  else { tT = clamp(0.5 + err * 0.4, 0, 1); bT = 0; }
+  R.throttle += (tT - R.throttle) * Math.min(1, 6 * dt);
+  R.brake += (bT - R.brake) * Math.min(1, 8 * dt);
+
+  // ---- DRS: zones on straights, never while braking ------------------------------
+  R.drs = !R.finished && inZone && speed > 24 && R.brake < 0.1 && err > -2;
+
+  // ---- pure-pursuit steering toward the lookahead waypoint ----------------------
+  const lookDist = clamp(7 + speed * 0.5, 9, 55);
+  const j = (idx + Math.round(lookDist / prof.segLen)) % prof.N;
+  const tx = sd.pos[j].x + sd.right[j].x * R.latTarget;
+  const tz = sd.pos[j].z + sd.right[j].z * R.latTarget;
+  const desiredYaw = Math.atan2(-(tx - car.position.x), -(tz - car.position.z));
+  const dy = wrapAngle(desiredYaw - P.yaw);
+  const instYawRate = wrapAngle(P.yaw - R.prevYaw) / Math.max(dt, 1e-4);
+  R.yawRate += (instYawRate - R.yawRate) * 0.25;
+  R.prevYaw = P.yaw;
+  const steer = clamp(dy * 3.0 - R.yawRate * 0.4, -1, 1);
+
+  return { throttle: R.throttle, brake: R.brake, steer, drs: R.drs };
+}
+
+// --- soft car-car separation (no stacking, player keeps agency) --------------------
+function separateCars(cars) {
+  for (let i = 0; i < cars.length; i++) {
+    for (let j = i + 1; j < cars.length; j++) {
+      const a = cars[i], b = cars[j];
+      const ra = a.userData.race, rb = b.userData.race;
+      if (!ra || !rb) continue;
+      if (Math.abs(ra.lateral - rb.lateral) > 2.3) {
+        const ddx = b.position.x - a.position.x, ddz = b.position.z - a.position.z;
+        if (ddx * ddx + ddz * ddz > 10.24) continue; // clean side-by-side
+      }
+      const dx = b.position.x - a.position.x, dz = b.position.z - a.position.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= SEP_RADIUS * SEP_RADIUS || d2 < 1e-6) continue;
+      const d = Math.sqrt(d2), nx = dx / d, nz = dz / d;
+      const push = Math.min(0.05, (SEP_RADIUS - d) * 0.18);
+      const wa = a.userData.isPlayer ? 0.3 : 0.5, wb = b.userData.isPlayer ? 0.3 : 0.5;
+      a.position.x -= nx * push * wa; a.position.z -= nz * push * wa;
+      b.position.x += nx * push * wb; b.position.z += nz * push * wb;
+      const pa = a.userData.physics, pb = b.userData.physics;
+      const fa = (-Math.sin(pa.yaw)) * nx + (-Math.cos(pa.yaw)) * nz;
+      const fb = (-Math.sin(pb.yaw)) * nx + (-Math.cos(pb.yaw)) * nz;
+      if (fa > 0.6) pa.speed *= 0.9985;   // contact drag on the follower
+      if (fb < -0.6) pb.speed *= 0.9985;
+    }
+  }
+}
+
+// --- checkpoint-validated lap counting (player + AI) --------------------------------
+function validateLap(car, trackData, session) {
+  const R = car.userData.race;
+  const cps = trackData.checkpoints;
+  const next = cps[R.nextCp];
+  const delta = (R.u - R.prevU + 1) % 1;
+  if (delta > 1e-9 && delta < 0.5) {                 // forward motion only
+    const arc = (next.u - R.prevU + 1) % 1;
+    if (arc <= delta + 1e-9) {
+      if (R.nextCp === 0) {                          // start / finish line
+        if (R.lap === 0) {
+          R.lap = 1; R.lapStart = session.raceTime;  // rolling start → lap 1 begins
+        } else if (!R.finished) {
+          const lapTime = session.raceTime - R.lapStart;
+          R.lastLapTime = lapTime;
+          if (R.bestLapTime == null || lapTime < R.bestLapTime) R.bestLapTime = lapTime;
+          R.lapsCompleted++;
+          R.lapStart = session.raceTime;
+          if (R.lapsCompleted >= TOTAL_LAPS) {
+            R.finished = true;
+            R.finishTime = session.raceTime;
+            R.lap = TOTAL_LAPS;
+            session.finishedCount++;
+            if (car.userData.isPlayer) session.phase = 'FINISHED';
+          } else {
+            R.lap = R.lapsCompleted + 1;
+          }
+        }
+      }
+      R.lastCheckpoint = next.name;
+      R.nextCp = (R.nextCp + 1) % cps.length;
+    }
+  }
+  R.prevU = R.u;
+}
+
+// --- live standings 1st..8th -----------------------------------------------------------
+function computeStandings(cars, trackData, session) {
+  const startU = trackData.startFinishLine.u;
+  const length = trackData.trackCurve.userData.length;
+  const entries = [];
+  for (const car of cars) {
+    const R = car.userData.race, P = car.userData.physics, e = R.entry;
+    const frac = (R.u - startU + 1) % 1;
+    R.progress = R.lap === 0 ? frac - 1 : R.lapsCompleted + frac;
+    e.lap = clamp(R.lap || 1, 1, TOTAL_LAPS);
+    e.lapsCompleted = R.lapsCompleted;
+    e.progress = R.progress;
+    e.bestLapTime = R.bestLapTime;
+    e.lastLapTime = R.lastLapTime;
+    e.currentLapTime = R.lap > 0 && !R.finished ? session.raceTime - R.lapStart : 0;
+    e.finished = R.finished;
+    e.finishTime = R.finishTime;
+    e.speedKmh = P.speed * 3.6;
+    e.drsActive = !!R.drs;
+    entries.push(e);
+  }
+  entries.sort((a, b) => {
+    if (a.finished && b.finished) return a.finishTime - b.finishTime;
+    if (a.finished) return -1;
+    if (b.finished) return 1;
+    return b.progress - a.progress || a.gridSlot - b.gridSlot;
+  });
+  const leader = entries[0];
+  entries.forEach((e, i) => {
+    e.position = i + 1;
+    if (i === 0) { e.gap = 0; e.gapText = 'LEADER'; return; }
+    if (e.finished && leader.finished) {
+      e.gap = e.finishTime - leader.finishTime;
+      e.gapText = `+${e.gap.toFixed(3)}s`;
+      return;
+    }
+    const lapsBehind = Math.floor(leader.progress - e.progress + 1e-6);
+    if (lapsBehind >= 1) {
+      e.gap = lapsBehind;
+      e.gapText = `+${lapsBehind} LAP${lapsBehind > 1 ? 'S' : ''}`;
+    } else {
+      e.gap = (leader.progress - e.progress) * length / 45;  // ≈ seconds at race pace
+      e.gapText = `+${e.gap.toFixed(3)}s`;
+    }
+  });
+  return entries;
+}
+
+// ==========================================================================================
+export function updateAIRacers(aiList, allCars, trackData, dt) {
+  const session = getSession(trackData);
+  const prof = getProfile(trackData);
+  const sd = trackData.trackCurve.userData.samples;
+  const cars = (allCars && allCars.length) ? allCars : aiList;
+
+  advanceSession(session, dt);
+  for (const car of cars) ensureRace(car, trackData);
+  for (const car of cars) localize(car, sd);
+
+  // rivals drive through the shared physics pipeline (grip, DRS, barriers, sparks)
+  for (const car of aiList) {
+    const controls = computeAIControls(car, cars, trackData, prof, session, dt);
+    updateCarPhysics(car, controls, trackData, dt);
+    localize(car, sd);
+  }
+
+  separateCars(cars);
+  for (const car of cars) validateLap(car, trackData, session);
+
+  const standings = computeStandings(cars, trackData, session);
+  const player = cars.find(c => c.userData.isPlayer) || cars[0];
+  const PR = player.userData.race;
+  const pe = PR.entry;
+  const pos = pe.position;
+  const frac = (PR.u - trackData.startFinishLine.u + 1) % 1;
+
+  return {
+    standings,
+    playerLap: clamp(PR.lap || 1, 1, TOTAL_LAPS),
+    totalLaps: TOTAL_LAPS,
+    currentLapTime: PR.lap > 0 && !PR.finished ? session.raceTime - PR.lapStart : 0,
+    bestLapTime: PR.bestLapTime,
+    startLights: session.lightsOn,
+    isFinished: PR.finished,
+    phase: session.phase,
+    raceTime: session.raceTime,
+    lastLapTime: PR.lastLapTime,
+    playerPosition: pos,
+    gapToLeader: pe.gap,
+    gapAhead: pos > 1 ? Math.max(0, pe.gap - standings[pos - 2].gap) : 0,
+    gapBehind: pos < standings.length ? Math.max(0, standings[pos].gap - pe.gap) : 0,
+    leaderName: standings[0].name,
+    checkpointName: PR.lastCheckpoint || 'Start / Finish',
+    nextCheckpointName: trackData.checkpoints[PR.nextCp].name,
+    lapProgress: frac,
+    finishedCount: session.finishedCount,
+    totalCars: cars.length,
+  };
+}

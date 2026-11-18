@@ -1,6 +1,8 @@
 {
-  "name": "",
-  "description": "",
+  "name": "F1 Monaco",
+  "description": "Monaco GP: Street Circuit Challenge — a 3D Three.js Formula 1 race through Monte Carlo with live F1 broadcast HUD and synthesized V6 turbo-hybrid audio.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
