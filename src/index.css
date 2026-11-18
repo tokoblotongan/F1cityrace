@@ -85,11 +85,11 @@ body {
   border-radius: var(--r);
   box-shadow: 0 14px 44px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07);
   overflow: hidden;
-  animation: panelIn 0.7s cubic-bezier(0.2, 0.9, 0.25, 1) backwards;
+  animation: panelIn 0.55s ease-out backwards;
 }
-@keyframes panelIn { from { opacity: 0; transform: translateY(14px); } }
-#tower { animation-delay: 0.1s; } #lap-panel { animation-delay: 0.2s; }
-#minimap-panel { animation-delay: 0.3s; } #telemetry { animation-delay: 0.4s; }
+@keyframes panelIn { from { opacity: 0; } }
+#tower { animation-delay: 0.1s; } #lap-panel { animation-delay: 0.18s; }
+#minimap-panel { animation-delay: 0.24s; } #telemetry { animation-delay: 0.3s; }
 
 .panel-head {
   display: flex; align-items: center; gap: 8px;
@@ -101,29 +101,36 @@ body {
 .live-tag { margin-left: auto; font-size: 10px; font-weight: 900; letter-spacing: 0.2em; color: var(--red-hot); }
 
 /* ── Leaderboard tower ─────────────────────────────────────────────────── */
-#tower { top: 18px; left: 18px; width: 264px; border-left: 3px solid var(--red); }
+#tower {
+  top: 14px; left: 14px; width: 214px; border-left: 3px solid var(--red);
+  transform: scale(0.6); transform-origin: top left;
+}
 #tower-rows { padding: 6px; }
 .trow {
-  display: grid; grid-template-columns: 24px 5px 44px 1fr auto; align-items: center; gap: 8px;
-  padding: 5px 8px; border-radius: 8px; font-size: 13px;
+  display: grid; grid-template-columns: 24px 5px 50px 1fr; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: 8px; font-size: 14px;
   transition: background 0.25s;
 }
 .trow + .trow { margin-top: 2px; }
-.trow .tpos { font-weight: 900; font-style: italic; font-size: 15px; color: var(--cream-dim); text-align: center; }
+.trow .tpos { font-weight: 900; font-style: italic; font-size: 16px; color: var(--cream-dim); text-align: center; }
 .trow .tbadge { width: 5px; height: 22px; border-radius: 3px; box-shadow: 0 0 8px currentColor; }
-.trow .tcode { font-weight: 700; letter-spacing: 0.08em; }
-.trow .tteam { font-size: 10px; color: var(--cream-dim); letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.trow .tgap { font: 700 11px var(--mono); color: var(--cream-dim); font-variant-numeric: tabular-nums; }
-.trow.player { background: linear-gradient(90deg, rgba(225, 6, 0, 0.3), rgba(225, 6, 0, 0.06)); box-shadow: inset 0 0 0 1px rgba(225, 6, 0, 0.5); }
+.trow .tcode { font-weight: 900; font-size: 15px; letter-spacing: 0.08em; }
+.trow .tteam { display: none; }
+.trow > span:last-child { justify-self: end; }
+.trow .tgap { font: 700 13px var(--mono); color: var(--cream-dim); font-variant-numeric: tabular-nums; }
+.trow.player { background: linear-gradient(90deg, rgba(225, 6, 0, 0.34), rgba(225, 6, 0, 0.08)); box-shadow: inset 0 0 0 1px rgba(225, 6, 0, 0.55); }
 .trow.player .tpos, .trow.player .tgap { color: var(--cream); }
 .trow.leader .tpos { color: var(--gold); }
 .trow.finished .tgap { color: var(--gold); }
-.trow .tdrs { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); opacity: 0; transition: opacity 0.2s; }
+.trow .tdrs { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); opacity: 0; transition: opacity 0.2s; }
 .trow .tdrs.on { opacity: 1; }
-#tower-foot { padding: 7px 12px; border-top: 1px solid var(--line); font-size: 9px; letter-spacing: 0.22em; color: var(--cream-dim); }
+#tower-foot { padding: 7px 10px; border-top: 1px solid var(--line); font-size: 10px; letter-spacing: 0.16em; color: var(--cream-dim); white-space: nowrap; }
 
 /* ── Lap / timing panel ────────────────────────────────────────────────── */
-#lap-panel { top: 18px; right: 18px; width: 282px; border-right: 3px solid var(--teal); }
+#lap-panel {
+  top: 14px; right: 14px; width: 282px; border-right: 3px solid var(--teal);
+  transform: scale(0.6); transform-origin: top right;
+}
 #lap-panel .panel-head { background: linear-gradient(270deg, rgba(0, 210, 190, 0.2), transparent 65%); }
 #audio-toggle {
   pointer-events: auto; margin-left: auto; display: flex; align-items: center; gap: 6px;
@@ -165,14 +172,40 @@ body {
 #gantry-status.flag { color: var(--gold); }
 
 /* ── Minimap ───────────────────────────────────────────────────────────── */
-#minimap-panel { bottom: 18px; left: 18px; padding: 10px; border-left: 3px solid var(--blue); }
+#minimap-panel {
+  bottom: 14px; left: 14px; padding: 10px; border-left: 3px solid var(--blue);
+  transform: scale(0.75); transform-origin: bottom left;
+}
+#minimap-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1px solid var(--line);
+}
+#minimap-toggle, #minimap-restore {
+  pointer-events: auto; cursor: pointer;
+  padding: 2px 7px; border-radius: 5px;
+  border: 1px solid rgba(59, 130, 246, 0.5);
+  background: rgba(59, 130, 246, 0.14);
+  color: var(--cream); font: 800 9px var(--font); letter-spacing: 0.14em;
+  transition: background 0.16s, border-color 0.16s, transform 0.1s;
+}
+#minimap-toggle:hover, #minimap-restore:hover {
+  background: rgba(59, 130, 246, 0.28); border-color: var(--teal);
+}
+#minimap-toggle:active, #minimap-restore:active { transform: scale(0.95); }
+#minimap-restore {
+  bottom: 14px; left: 14px; padding: 6px 10px; border-left: 3px solid var(--blue);
+  border-radius: 8px; font-size: 10px;
+}
 #minimap { display: block; width: 236px; height: 198px; }
 #minimap-meta { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-top: 6px; }
-#minimap-label { font-size: 8px; font-weight: 700; letter-spacing: 0.18em; color: var(--cream-dim); }
+#minimap-label { font-size: 9px; font-weight: 700; letter-spacing: 0.16em; color: var(--cream-dim); }
 #checkpoint-name { font-size: 10px; font-weight: 900; letter-spacing: 0.14em; color: var(--teal); white-space: nowrap; }
 
 /* ── Telemetry cluster ─────────────────────────────────────────────────── */
-#telemetry { bottom: 18px; right: 18px; width: 330px; padding: 12px 14px 12px; border-right: 3px solid var(--green); }
+#telemetry {
+  bottom: 14px; right: 14px; width: 330px; padding: 12px 14px 12px; border-right: 3px solid var(--green);
+  transform: scale(0.7); transform-origin: bottom right;
+}
 #rpm-bar { display: flex; gap: 4px; height: 12px; margin-bottom: 10px; }
 .led { flex: 1; border-radius: 3px; background: rgba(242, 239, 230, 0.08); transition: background 0.07s, box-shadow 0.1s, opacity 0.07s; }
 .led.g.lit { background: var(--green); box-shadow: 0 0 10px rgba(34, 255, 136, 0.8); }
@@ -319,15 +352,14 @@ body {
 
 /* ── Responsive ────────────────────────────────────────────────────────── */
 @media (max-width: 1060px) {
-  #tower { width: 224px; }
-  .trow { grid-template-columns: 20px 4px 38px 1fr auto; font-size: 11px; padding: 4px 6px; }
-  .trow .tteam { display: none; }
-  #lap-panel { width: 240px; }
-  #lap-count { font-size: 24px; }
-  #minimap { width: 180px; height: 152px; }
-  #telemetry { width: 280px; }
-  #speed-value { font-size: 46px; }
-  #gear-value { font-size: 38px; }
+  #tower { width: 204px; }
+  .trow { grid-template-columns: 22px 4px 44px 1fr; font-size: 13px; padding: 4px 6px; }
+  #lap-panel { width: 256px; }
+  #lap-count { font-size: 26px; }
+  #minimap { width: 200px; height: 168px; }
+  #telemetry { width: 296px; }
+  #speed-value { font-size: 48px; }
+  #gear-value { font-size: 40px; }
   #controls-hint { gap: 10px; font-size: 9px; }
 }
 @media (max-width: 760px), (pointer: coarse) and (max-width: 900px) {
@@ -363,7 +395,7 @@ body {
   #finish-card { padding: 20px 16px; }
 }
 @media (max-height: 560px) {
-  #minimap-panel { display: none; }
+  #minimap-panel { transform: scale(0.62); }
   #tower-rows .trow { padding: 2px 6px; }
 }
 @media (prefers-reduced-motion: reduce) {

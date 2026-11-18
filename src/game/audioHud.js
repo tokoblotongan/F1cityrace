@@ -118,6 +118,31 @@ function mmPath(g, u0, u1) {
     k ? g.lineTo(cx, cy) : g.moveTo(cx, cy);
   }
 }
+function ensureMinimapCanvas() {
+  const c = $('minimap');
+  if (!c) {
+    els.minimap = null;
+    mm.ctx = null;
+    return false;
+  }
+  const cw = c.clientWidth || 236;
+  const ch = c.clientHeight || 198;
+  if (
+    c !== els.minimap ||
+    !mm.ctx ||
+    mm.ctx.canvas !== c ||
+    !mm.base ||
+    c.width === 0 ||
+    mm.w !== cw ||
+    mm.h !== ch
+  ) {
+    els.minimap = c;
+    els.minimapLabel = $('minimap-label');
+    els.checkpoint = $('checkpoint-name');
+    mmSize();
+  }
+  return !!(mm.ctx && mm.base);
+}
 function mmRenderBase() {
   if (!mm.ctx) return;
   const b = document.createElement('canvas');
@@ -156,10 +181,10 @@ function mmRenderBase() {
   const label = (pi, txt, ox, oy) => { const [x, y] = mm.tx(PTS[pi][0], PTS[pi][2]); g.fillText(txt, x + ox, y + oy); };
   label(9, 'CASINO', -40, -6); label(20, 'TUNNEL', -12, -9); label(27, 'PISCINE', 7, 4); label(31, 'RASCASSE', -14, 13);
   mm.base = b;
-  setText(els.minimapLabel, `CIRCUIT DE MONACO · ${(mapLen / 1000).toFixed(2)} KM`);
+  setText(els.minimapLabel, 'CIRCUIT DE MONACO - 3.34 KM');
 }
 function mmDraw(raceState, now) {
-  if (!mm.ctx || !mm.base) return;
+  if (!ensureMinimapCanvas()) return;
   const g = mm.ctx;
   g.setTransform(mm.dpr, 0, 0, mm.dpr, 0, 0);
   g.clearRect(0, 0, mm.w, mm.h);
@@ -393,6 +418,7 @@ function updateLapPanel(rs) {
   let overall = Infinity;
   for (const e of rs.standings) if (e.bestLapTime != null && e.bestLapTime < overall) overall = e.bestLapTime;
   if (els.bestTime) els.bestTime.classList.toggle('overall', rs.bestLapTime != null && rs.bestLapTime <= overall);
+  if (!els.checkpoint || !els.checkpoint.isConnected) els.checkpoint = $('checkpoint-name');
   setText(els.checkpoint, (rs.checkpointName || 'START / FINISH').toUpperCase());
 
   for (let i = 0; i < gantryLights.length; i++) gantryLights[i].classList.toggle('on', i < rs.startLights);

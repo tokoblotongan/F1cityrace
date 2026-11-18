@@ -54,49 +54,102 @@ function evalCentripetal(pts, t) {
   );
 }
 
-function makeAsphaltTexture() {
-  const c = document.createElement('canvas');
-  c.width = 512;
-  c.height = 512;
-  const g = c.getContext('2d');
-  g.fillStyle = '#1c1f25';
-  g.fillRect(0, 0, 512, 512);
+function makeAsphaltTextures() {
+  const W = 1024;
+  const H = 1024;
+  const alb = document.createElement('canvas');
+  alb.width = W; alb.height = H;
+  const ag = alb.getContext('2d');
 
-  // Fine asphalt grain
-  for (let i = 0; i < 16000; i++) {
-    const x = Math.random() * 512;
-    const y = Math.random() * 512;
-    const v = 20 + Math.floor(Math.random() * 26);
-    g.fillStyle = `rgb(${v},${v + 2},${v + 4})`;
-    g.fillRect(x, y, 2, 2);
+  const rgh = document.createElement('canvas');
+  rgh.width = W; rgh.height = H;
+  const rg = rgh.getContext('2d');
+
+  const bmp = document.createElement('canvas');
+  bmp.width = W; bmp.height = H;
+  const bg = bmp.getContext('2d');
+
+  const aImg = ag.createImageData(W, H);
+  const rImg = rg.createImageData(W, H);
+  const bImg = bg.createImageData(W, H);
+  const ad = aImg.data;
+  const rd = rImg.data;
+  const bd = bImg.data;
+
+  // Deterministic fast hash for seamless mineral aggregate micro-grain
+  let seed = 1337;
+  const rnd = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = (y * W + x) * 4;
+      const u = x / W;
+
+      // Multi-frequency mineral aggregate + subtle quartz/basalt speckles
+      const n1 = rnd();
+      const speck = n1 > 0.94 ? 22 : n1 < 0.08 ? -14 : (n1 - 0.5) * 16;
+
+      // Dual rubberized racing-line grooves (left & right tire tracks + center polish)
+      const gL = Math.exp(-Math.pow((u - 0.31) / 0.11, 2));
+      const gR = Math.exp(-Math.pow((u - 0.69) / 0.11, 2));
+      const gMid = Math.exp(-Math.pow((u - 0.50) / 0.14, 2)) * 0.45;
+      const groove = Math.min(1, gL + gR + gMid);
+
+      const base = 44 + speck - groove * 13;
+      ad[idx] = Math.max(12, Math.min(95, base));
+      ad[idx + 1] = Math.max(13, Math.min(98, base + 2));
+      ad[idx + 2] = Math.max(16, Math.min(104, base + 5));
+      ad[idx + 3] = 255;
+
+      // Roughness: coarse shoulder aggregate (~0.92), smoother rubbered racing groove (~0.58)
+      const rVal = Math.max(125, Math.min(248, 232 - groove * 76 + speck * 0.7));
+      rd[idx] = rd[idx + 1] = rd[idx + 2] = rVal;
+      rd[idx + 3] = 255;
+
+      // Bump: crisp stone aggregate relief (slightly compacted in rubbered grooves)
+      const bVal = Math.max(40, Math.min(235, 138 + speck * 3.2 - groove * 14));
+      bd[idx] = bd[idx + 1] = bd[idx + 2] = bVal;
+      bd[idx + 3] = 255;
+    }
   }
 
-  // Darker rubbered racing groove
-  const groove = g.createLinearGradient(0, 0, 512, 0);
-  groove.addColorStop(0.0, 'rgba(0,0,0,0)');
-  groove.addColorStop(0.28, 'rgba(8,10,14,0.28)');
-  groove.addColorStop(0.5, 'rgba(5,7,10,0.4)');
-  groove.addColorStop(0.72, 'rgba(8,10,14,0.28)');
-  groove.addColorStop(1.0, 'rgba(0,0,0,0)');
-  g.fillStyle = groove;
-  g.fillRect(0, 0, 512, 512);
+  ag.putImageData(aImg, 0, 0);
+  rg.putImageData(rImg, 0, 0);
+  bg.putImageData(bImg, 0, 0);
 
-  // Crisp track boundary white lines
-  g.fillStyle = '#e8e4da';
-  g.fillRect(10, 0, 7, 512);
-  g.fillRect(495, 0, 7, 512);
+  // Subtle weathered longitudinal asphalt paving seam
+  ag.fillStyle = 'rgba(10, 12, 16, 0.22)';
+  ag.fillRect(W * 0.5 - 3, 0, 6, H);
 
-  // Subtle center lane seam
-  g.fillStyle = 'rgba(255,255,255,0.06)';
-  g.fillRect(254, 0, 4, 512);
+  // Crisp painted white track-edge lines (with slight satin paint roughness)
+  ag.fillStyle = '#e7e3d9';
+  ag.fillRect(18, 0, 15, H);
+  ag.fillRect(W - 33, 0, 15, H);
+  rg.fillStyle = 'rgb(165, 165, 165)';
+  rg.fillRect(18, 0, 15, H);
+  rg.fillRect(W - 33, 0, 15, H);
+  bg.fillStyle = 'rgb(175, 175, 175)';
+  bg.fillRect(18, 0, 15, H);
+  bg.fillRect(W - 33, 0, 15, H);
 
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(1, 280);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 8;
-  return tex;
+  const setup = (canvas, isColor) => {
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(1, 260);
+    if (isColor) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  };
+
+  return {
+    map: setup(alb, true),
+    roughnessMap: setup(rgh, false),
+    bumpMap: setup(bmp, false),
+  };
 }
 
 function makeCurbTexture() {
@@ -628,7 +681,6 @@ function makeSponsorBannerTexture(primary, accent, title, sub) {
 
 function makeTiledBuildingGeo(uRepeat, vRepeat) {
   const geo = new THREE.BoxGeometry(1, 1, 1);
-  geo.translate(0, 0.5, 0);
   const uv = geo.attributes.uv;
   // Faces 0..5 (4 vertices each): +X, -X, +Y, -Y, +Z, -Z
   for (let face = 0; face < 6; face++) {
@@ -974,10 +1026,14 @@ export function buildMonacoTrack(scene) {
   ];
 
   // Track surface & curbs
+  const asphaltTex = makeAsphaltTextures();
   const asphaltMat = new THREE.MeshStandardMaterial({
-    map: makeAsphaltTexture(),
+    map: asphaltTex.map,
+    roughnessMap: asphaltTex.roughnessMap,
+    bumpMap: asphaltTex.bumpMap,
+    bumpScale: 0.04,
     roughness: 0.78,
-    metalness: 0.06,
+    metalness: 0.05,
   });
   scene.add(buildRibbon(samples, -HALF_WIDTH, HALF_WIDTH, 0.0, asphaltMat));
 
@@ -1166,38 +1222,79 @@ export function buildMonacoTrack(scene) {
   tunGeo.computeVertexNormals();
   scene.add(new THREE.Mesh(tunGeo, tunShellMat));
 
-  // Ground terrain & Mediterranean Port Hercule water
+  // Explicit Port Hercule harbor water zone (shoreline seawall at x = 732 + NE/SE coves)
+  const HARBOR_EDGE_X = 732;
+  const isInsideHarborWater = (x, z, margin = 0) => {
+    if (x >= HARBOR_EDGE_X - margin) return true;
+    if (x >= 680 - margin && z <= -390 + margin) return true;
+    if (x >= 560 - margin && z >= 195 - margin) return true;
+    if (x >= 500 - margin && (z <= -620 + margin || z >= 340 - margin)) return true;
+    return false;
+  };
+
+  // Mainland coastal terrain (strictly west of Port Hercule harbor water, elevated above water level)
   const terrain = new THREE.Mesh(
-    new THREE.PlaneGeometry(3600, 3600),
+    new THREE.PlaneGeometry(2300, 3600),
     new THREE.MeshStandardMaterial({ color: 0x3b4d38, roughness: 0.95, metalness: 0.0 })
   );
   terrain.rotation.x = -Math.PI / 2;
-  terrain.position.set(320, -2.4, -120);
+  terrain.position.set(-650, -0.55, -100);
   terrain.receiveShadow = true;
   scene.add(terrain);
 
+  // Mediterranean Port Hercule water (strictly inside harbor basin & eastern seafront)
   const waterMaterial = createWaterMaterial();
-  const water = new THREE.Mesh(new THREE.PlaneGeometry(2400, 2200, 96, 96), waterMaterial);
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(2500, 3600, 96, 96), waterMaterial);
   water.rotation.x = -Math.PI / 2;
-  water.position.set(860, -1.6, -20);
+  water.position.set(1750, -1.6, -100);
   scene.add(water);
 
-  // Harbor seawall quay & promenade coping
+  // Solid urban quay platform matching the exact land-vs-harbor coastline
+  const quayShape = new THREE.Shape();
+  quayShape.moveTo(-160, 620);
+  quayShape.lineTo(680, 620);
+  quayShape.lineTo(680, 390);
+  quayShape.lineTo(HARBOR_EDGE_X, 390);
+  quayShape.lineTo(HARBOR_EDGE_X, -195);
+  quayShape.lineTo(560, -195);
+  quayShape.lineTo(560, -340);
+  quayShape.lineTo(-160, -340);
+  quayShape.closePath();
+
+  const quayGeo = new THREE.ExtrudeGeometry(quayShape, { depth: 2.8, bevelEnabled: false });
+  quayGeo.rotateX(-Math.PI / 2);
+  quayGeo.translate(0, -3.05, 0);
   const quay = new THREE.Mesh(
-    new THREE.BoxGeometry(690, 3.0, 760),
+    quayGeo,
     new THREE.MeshStandardMaterial({ color: 0x9b9282, roughness: 0.9, metalness: 0.04 })
   );
-  quay.position.set(380, -1.55, -140);
   quay.receiveShadow = true;
   scene.add(quay);
 
-  const coping = new THREE.Mesh(
-    new THREE.BoxGeometry(3.2, 0.35, 760),
-    new THREE.MeshStandardMaterial({ color: 0xc9c0b0, roughness: 0.8 })
-  );
-  coping.position.set(724, -0.05, -140);
-  coping.receiveShadow = true;
-  scene.add(coping);
+  // Solid concrete/stone harbor seawall promenade deck separating track/land from Port Hercule
+  const promenadeMat = new THREE.MeshStandardMaterial({ color: 0xbcb3a2, roughness: 0.84, metalness: 0.04 });
+  const copingMat = new THREE.MeshStandardMaterial({ color: 0xd2cab9, roughness: 0.78 });
+
+  const promenadeDeck = new THREE.Mesh(new THREE.BoxGeometry(20, 2.9, 585), promenadeMat);
+  promenadeDeck.position.set(722, -1.47, -97.5);
+  promenadeDeck.receiveShadow = true;
+  scene.add(promenadeDeck);
+
+  const eastCoping = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.75, 585), copingMat);
+  eastCoping.position.set(730.8, 0.25, -97.5);
+  eastCoping.receiveShadow = true;
+  eastCoping.castShadow = true;
+  scene.add(eastCoping);
+
+  const neCopingA = new THREE.Mesh(new THREE.BoxGeometry(52, 0.75, 2.4), copingMat);
+  neCopingA.position.set(706, 0.25, -390);
+  const neCopingB = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.75, 230), copingMat);
+  neCopingB.position.set(680, 0.25, -505);
+  const seCopingA = new THREE.Mesh(new THREE.BoxGeometry(172, 0.75, 2.4), copingMat);
+  seCopingA.position.set(646, 0.25, 195);
+  const seCopingB = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.75, 145), copingMat);
+  seCopingB.position.set(560, 0.25, 267.5);
+  scene.add(neCopingA, neCopingB, seCopingA, seCopingB);
 
   // Track clearance helper (prevents any prop/building from overlapping track)
   const nearestSample = (x, z) => {
@@ -1225,6 +1322,7 @@ export function buildMonacoTrack(scene) {
     bumpScale: 0.18,
     roughness: 0.95,
     metalness: 0.08,
+    side: THREE.FrontSide,
   });
 
   const hotelTex = makeHotelFacadeTextures();
@@ -1236,18 +1334,21 @@ export function buildMonacoTrack(scene) {
     bumpScale: 0.22,
     roughness: 0.92,
     metalness: 0.14,
+    side: THREE.FrontSide,
   });
 
   const roofMat = new THREE.MeshStandardMaterial({
     map: makeTerracottaRoofTexture(),
     roughness: 0.78,
     metalness: 0.04,
+    side: THREE.FrontSide,
   });
 
   const terraceMat = new THREE.MeshStandardMaterial({
     color: 0xcbc2b2,
     roughness: 0.82,
     metalness: 0.05,
+    side: THREE.FrontSide,
   });
 
   const awningMat = new THREE.MeshStandardMaterial({
@@ -1259,12 +1360,17 @@ export function buildMonacoTrack(scene) {
   // --- Mediterranean City Skyline (Apartments, Luxury Hotels, Setbacks & Roofs) ---
   const aptLowSpecs = [];
   const aptMidSpecs = [];
-  const hotelSpecs = [];
+  const aptTallSpecs = [];
+  const aptTowerSpecs = [];
+  const hotelLowSpecs = [];
+  const hotelMidSpecs = [];
+  const hotelTallSpecs = [];
   const roofSpecs = [];
   const awningSpecs = [];
 
   const aptPalette = [0xf2e6d4, 0xe8c499, 0xdfa78b, 0xdfd9ca, 0xcad6c5, 0xead4b4, 0xd8b29b];
   const hotelPalette = [0xf7f2e8, 0xebe3d3, 0xe7dfd5, 0xf2e9dc];
+  const BUILDING_GROUND_Y = -1.0;
 
   for (let i = 0; i < 168; i++) {
     const idx = Math.floor((i / 168) * SAMPLE_COUNT);
@@ -1272,41 +1378,54 @@ export function buildMonacoTrack(scene) {
     const r = right[idx];
     const side = i % 2 === 0 ? -1 : 1;
 
-    // Keep Port Hercule harbor vista open along the eastern seafront
-    if (side === 1 && p.x > 520 && p.z > -370 && p.z < 140) continue;
-
     const dist = 25 + ((i * 37) % 62);
     const bx = p.x + r.x * side * dist;
     const bz = p.z + r.z * side * dist;
+    const w = 15 + (i % 4) * 4;
+    const d = 14 + ((i * 3) % 4) * 4;
+    const halfFootprint = Math.max(w, d) * 0.5;
+
+    // Enforce strict >=12m setback from Port Hercule harbor water edge
+    if (isInsideHarborWater(bx, bz, 12 + halfFootprint)) continue;
+
     const near = nearestSample(bx, bz);
     if (near.distSq < 460) continue; // strict >=21.4m track centerline clearance
 
     const nearT = tan[near.idx];
     const roadYaw = Math.atan2(-nearT.x, -nearT.z);
-    const baseY = Math.max(-1.5, pos[near.idx].y - 1.4);
-    const w = 15 + (i % 4) * 4;
-    const d = 14 + ((i * 3) % 4) * 4;
+    const trackY = Math.max(0, pos[near.idx].y);
 
     if (i % 5 === 0) {
-      // Luxury multi-tiered hotel with upper setback & rooftop terrace
-      const h1 = 22 + ((i * 11) % 16);
+      // Luxury multi-tiered hotel grounded to y=-1.0 with upper setback & rooftop terrace
+      const podiumStoriesH = 20 + ((i * 11) % 14);
+      const h1 = trackY + podiumStoriesH - BUILDING_GROUND_Y;
       const h2 = 11 + ((i * 7) % 10);
       const col = hotelPalette[i % hotelPalette.length];
-      hotelSpecs.push({ x: bx, y: baseY, z: bz, w, h: h1, d, yaw: roadYaw, col });
-      hotelSpecs.push({
+      const podiumTopY = BUILDING_GROUND_Y + h1;
+      const towerTopY = podiumTopY + h2;
+
+      const podiumSpec = { x: bx, y: BUILDING_GROUND_Y + h1 * 0.5, z: bz, w, h: h1, d, yaw: roadYaw, col };
+      if (h1 < 25) hotelLowSpecs.push(podiumSpec);
+      else if (h1 < 37) hotelMidSpecs.push(podiumSpec);
+      else hotelTallSpecs.push(podiumSpec);
+
+      const upperSpec = {
         x: bx,
-        y: baseY + h1,
+        y: podiumTopY + h2 * 0.5,
         z: bz,
         w: w * 0.74,
         h: h2,
         d: d * 0.74,
         yaw: roadYaw,
         col,
-      });
+      };
+      if (h2 < 16) hotelLowSpecs.push(upperSpec);
+      else hotelMidSpecs.push(upperSpec);
+
       roofSpecs.push({
         type: 'terrace',
         x: bx,
-        y: baseY + h1 + h2,
+        y: towerTopY + 0.55,
         z: bz,
         w: w * 0.78,
         h: 1.1,
@@ -1314,16 +1433,22 @@ export function buildMonacoTrack(scene) {
         yaw: roadYaw,
       });
     } else {
-      // Classic Riviera apartment block + pitched terracotta roof
+      // Classic Riviera apartment block grounded to y=-1.0 + pitched terracotta roof
       const isMid = i % 3 !== 0;
-      const h = isMid ? 20 + ((i * 13) % 18) : 13 + ((i * 9) % 8);
+      const storiesH = isMid ? 18 + ((i * 13) % 16) : 12 + ((i * 9) % 8);
+      const h = trackY + storiesH - BUILDING_GROUND_Y;
       const col = aptPalette[i % aptPalette.length];
-      const target = isMid ? aptMidSpecs : aptLowSpecs;
-      target.push({ x: bx, y: baseY, z: bz, w, h, d, yaw: roadYaw, col });
+      const spec = { x: bx, y: BUILDING_GROUND_Y + h * 0.5, z: bz, w, h, d, yaw: roadYaw, col };
+
+      if (h < 22) aptLowSpecs.push(spec);
+      else if (h < 31) aptMidSpecs.push(spec);
+      else if (h < 41) aptTallSpecs.push(spec);
+      else aptTowerSpecs.push(spec);
+
       roofSpecs.push({
         type: 'hip',
         x: bx,
-        y: baseY + h,
+        y: BUILDING_GROUND_Y + h,
         z: bz,
         w: w + 0.9,
         h: 2.8 + (i % 3) * 0.6,
@@ -1339,10 +1464,10 @@ export function buildMonacoTrack(scene) {
       const len = Math.hypot(toRoadX, toRoadZ) || 1;
       const ax = bx + (toRoadX / len) * (w * 0.52);
       const az = bz + (toRoadZ / len) * (d * 0.52);
-      if (nearestSample(ax, az).distSq > 200) {
+      if (nearestSample(ax, az).distSq > 200 && !isInsideHarborWater(ax, az, 12)) {
         awningSpecs.push({
           x: ax,
-          y: baseY + 3.8,
+          y: trackY + 3.8,
           z: az,
           w: Math.min(w, d) * 0.72,
           yaw: Math.atan2(toRoadX, toRoadZ),
@@ -1375,7 +1500,11 @@ export function buildMonacoTrack(scene) {
 
   spawnInstancedBuildings(aptLowSpecs, makeTiledBuildingGeo(1.5, 1.0), aptMat);
   spawnInstancedBuildings(aptMidSpecs, makeTiledBuildingGeo(2.0, 1.75), aptMat);
-  spawnInstancedBuildings(hotelSpecs, makeTiledBuildingGeo(2.0, 1.5), hotelMat);
+  spawnInstancedBuildings(aptTallSpecs, makeTiledBuildingGeo(2.0, 2.5), aptMat);
+  spawnInstancedBuildings(aptTowerSpecs, makeTiledBuildingGeo(2.0, 3.25), aptMat);
+  spawnInstancedBuildings(hotelLowSpecs, makeTiledBuildingGeo(2.0, 1.0), hotelMat);
+  spawnInstancedBuildings(hotelMidSpecs, makeTiledBuildingGeo(2.0, 1.75), hotelMat);
+  spawnInstancedBuildings(hotelTallSpecs, makeTiledBuildingGeo(2.0, 2.75), hotelMat);
 
   // Sloped Terracotta Roofs & Rooftop Terraces
   const hipSpecs = roofSpecs.filter((r) => r.type === 'hip');
@@ -1397,7 +1526,6 @@ export function buildMonacoTrack(scene) {
   }
   if (terSpecs.length) {
     const terGeo = new THREE.BoxGeometry(1, 1, 1);
-    terGeo.translate(0, 0.5, 0);
     const terIM = new THREE.InstancedMesh(terGeo, terraceMat, terSpecs.length);
     terIM.receiveShadow = true;
     terSpecs.forEach((r, i) => {
@@ -1435,7 +1563,7 @@ export function buildMonacoTrack(scene) {
   const casP = pos[casIdx];
   const casR = right[casIdx];
   const casPos = new THREE.Vector3(casP.x - casR.x * 38, casP.y - 1.2, casP.z - casR.z * 38);
-  if (nearestSample(casPos.x, casPos.z).distSq > 500) {
+  if (nearestSample(casPos.x, casPos.z).distSq > 500 && !isInsideHarborWater(casPos.x, casPos.z, 38)) {
     const casino = new THREE.Group();
     casino.position.copy(casPos);
     casino.rotation.y = Math.atan2(casP.x - casPos.x, casP.z - casPos.z);
@@ -1446,14 +1574,19 @@ export function buildMonacoTrack(scene) {
       roughnessMap: casTex.roughnessMap,
       roughness: 0.9,
       metalness: 0.15,
+      side: THREE.FrontSide,
     });
     const casStoneMat = new THREE.MeshStandardMaterial({ color: 0xe7dcc4, roughness: 0.78 });
     const casCopperMat = new THREE.MeshStandardMaterial({ color: 0x4b8a77, roughness: 0.42, metalness: 0.45 });
     const casGoldMat = new THREE.MeshStandardMaterial({ color: 0xd8b24a, roughness: 0.25, metalness: 0.85 });
     const casSlateMat = new THREE.MeshStandardMaterial({ color: 0x2c3542, roughness: 0.55, metalness: 0.2 });
 
-    const plinth = new THREE.Mesh(new THREE.BoxGeometry(52, 2.2, 30), casStoneMat);
-    plinth.position.y = 1.1;
+    // Full-depth stone foundation extending cleanly down to y = -1.0
+    const casLocalGroundY = BUILDING_GROUND_Y - casPos.y;
+    const plinthH = 2.2 - casLocalGroundY;
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(52, plinthH, 30), casStoneMat);
+    plinth.position.y = casLocalGroundY + plinthH * 0.5;
+    plinth.castShadow = true;
     plinth.receiveShadow = true;
 
     const mainHall = new THREE.Mesh(new THREE.BoxGeometry(46, 15, 24), casWallMat);
@@ -1504,14 +1637,15 @@ export function buildMonacoTrack(scene) {
     scene.add(casino);
   }
 
-  // --- Palm Trees & Mediterranean Cypress Greenery (InstancedMesh) ---
+  // --- Palm Trees & Mediterranean Cypress Greenery (InstancedMesh, Strictly On Land) ---
   const palmSpecs = [];
   const cypressSpecs = [];
+  const planterSpecs = [];
 
-  // Harbor promenade palms (along eastern Port Hercule seawall)
+  // Harbor promenade palms (along eastern Port Hercule seawall promenade, >=14m inland from water)
   for (let z = -340; z <= 130; z += 26) {
     const px = 718;
-    if (nearestSample(px, z).distSq > 260) {
+    if (!isInsideHarborWater(px, z, 12) && nearestSample(px, z).distSq > 260) {
       palmSpecs.push({ x: px, y: -0.05, z, s: 0.92 + ((Math.abs(z) % 5) * 0.05) });
     }
   }
@@ -1525,14 +1659,38 @@ export function buildMonacoTrack(scene) {
     const dist = isPalm ? 13.8 + (i % 3) * 1.4 : 16.5 + (i % 5) * 4.5;
     const tx = p.x + r.x * side * dist;
     const tz = p.z + r.z * side * dist;
+    if (isInsideHarborWater(tx, tz, 12)) continue;
     const near = nearestSample(tx, tz);
     if (near.distSq < 185) continue; // strictly outside Armco barriers
-    const ty = Math.max(-1.4, pos[near.idx].y - 0.15);
+    const nearY = pos[near.idx].y;
+    const ty = nearY > 0.6 ? nearY - 0.15 : -0.25;
+    if (ty > 0.2) {
+      planterSpecs.push({ x: tx, topY: ty + 0.15, rad: isPalm ? 1.45 : 1.75 });
+    }
     if (isPalm) {
       palmSpecs.push({ x: tx, y: ty, z: tz, s: 0.85 + (i % 4) * 0.12 });
     } else {
       cypressSpecs.push({ x: tx, y: ty, z: tz, s: 0.85 + (i % 5) * 0.15 });
     }
+  }
+
+  if (planterSpecs.length) {
+    const planterGeo = new THREE.CylinderGeometry(1, 1.12, 1, 10);
+    const planterMat = new THREE.MeshStandardMaterial({ color: 0xb9b09f, roughness: 0.85 });
+    const planterIM = new THREE.InstancedMesh(planterGeo, planterMat, planterSpecs.length);
+    planterIM.receiveShadow = true;
+    planterIM.castShadow = true;
+    planterSpecs.forEach((pl, i) => {
+      const h = pl.topY - BUILDING_GROUND_Y;
+      dummy.position.set(pl.x, BUILDING_GROUND_Y + h * 0.5, pl.z);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(pl.rad, h, pl.rad);
+      dummy.updateMatrix();
+      planterIM.setMatrixAt(i, dummy.matrix);
+    });
+    planterIM.instanceMatrix.needsUpdate = true;
+    planterIM.computeBoundingSphere();
+    scene.add(planterIM);
   }
 
   if (palmSpecs.length) {
@@ -1574,7 +1732,7 @@ export function buildMonacoTrack(scene) {
 
   if (cypressSpecs.length) {
     const cypGeo = new THREE.ConeGeometry(1.35, 7.2, 8);
-    cypGeo.translate(0, 3.9, 0);
+    cypGeo.translate(0, 3.6, 0);
     const cypMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88 });
     const cypIM = new THREE.InstancedMesh(cypGeo, cypMat, cypressSpecs.length);
     cypIM.castShadow = true;
@@ -1594,7 +1752,7 @@ export function buildMonacoTrack(scene) {
     scene.add(cypIM);
   }
 
-  // --- Streetlamps along Circuit Perimeter & Harbor Promenade ---
+  // --- Streetlamps along Circuit Perimeter & Harbor Promenade (Strictly >=12m from water) ---
   const lampSpecs = [];
   for (let i = 0; i < 68; i++) {
     const idx = Math.floor((i / 68) * SAMPLE_COUNT);
@@ -1606,6 +1764,7 @@ export function buildMonacoTrack(scene) {
     const side = i % 2 === 0 ? 1 : -1;
     const lx = p.x + r.x * side * (HALF_WIDTH + 2.3);
     const lz = p.z + r.z * side * (HALF_WIDTH + 2.3);
+    if (isInsideHarborWater(lx, lz, 12)) continue;
     if (nearestSample(lx, lz).distSq < 112) continue;
     lampSpecs.push({
       x: lx,
@@ -1628,6 +1787,7 @@ export function buildMonacoTrack(scene) {
     });
     const poleIM = new THREE.InstancedMesh(poleGeo, poleMat, lampSpecs.length);
     const bulbIM = new THREE.InstancedMesh(bulbGeo, bulbMat, lampSpecs.length);
+    const elevatedLamps = lampSpecs.filter((l) => l.y > 0.25);
     lampSpecs.forEach((l, i) => {
       dummy.position.set(l.x, l.y, l.z);
       dummy.rotation.set(0, l.yaw, 0);
@@ -1644,6 +1804,23 @@ export function buildMonacoTrack(scene) {
     poleIM.computeBoundingSphere();
     bulbIM.computeBoundingSphere();
     scene.add(poleIM, bulbIM);
+
+    if (elevatedLamps.length) {
+      const footGeo = new THREE.CylinderGeometry(0.24, 0.34, 1, 7);
+      const footMat = new THREE.MeshStandardMaterial({ color: 0x7a7f87, roughness: 0.85 });
+      const footIM = new THREE.InstancedMesh(footGeo, footMat, elevatedLamps.length);
+      elevatedLamps.forEach((l, i) => {
+        const fh = l.y - BUILDING_GROUND_Y;
+        dummy.position.set(l.x, BUILDING_GROUND_Y + fh * 0.5, l.z);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, fh, 1);
+        dummy.updateMatrix();
+        footIM.setMatrixAt(i, dummy.matrix);
+      });
+      footIM.instanceMatrix.needsUpdate = true;
+      footIM.computeBoundingSphere();
+      scene.add(footIM);
+    }
   }
 
   // --- Grandstand Bleachers + Instanced Colorful Spectator Crowds ---
@@ -1667,11 +1844,20 @@ export function buildMonacoTrack(scene) {
     const t = tan[idx];
     const gx = p.x + r.x * spot.side * spot.dist;
     const gz = p.z + r.z * spot.side * spot.dist;
+    if (isInsideHarborWater(gx, gz, 25)) continue;
     if (nearestSample(gx, gz).distSq < 280) continue;
 
     const gsGroup = new THREE.Group();
     gsGroup.position.set(gx, p.y, gz);
     gsGroup.rotation.y = Math.atan2(-spot.side * r.x, -spot.side * r.z);
+
+    // Grounded concrete foundation sub-base reaching down to y = -1.0
+    const gsBaseH = p.y + 0.35 - BUILDING_GROUND_Y;
+    const gsSubBase = new THREE.Mesh(new THREE.BoxGeometry(26, gsBaseH, 9.2), gsConcreteMat);
+    gsSubBase.position.set(0, BUILDING_GROUND_Y - p.y + gsBaseH * 0.5, -3.1);
+    gsSubBase.receiveShadow = true;
+    gsSubBase.castShadow = true;
+    gsGroup.add(gsSubBase);
 
     // 5 stepped concrete seating tiers
     for (let tier = 0; tier < 5; tier++) {
@@ -1775,7 +1961,7 @@ export function buildMonacoTrack(scene) {
   spawnBanners(bannerA, makeSponsorBannerTexture('#121722', '#e10600', 'MONACO GP', 'MONTE-CARLO STREET CIRCUIT'));
   spawnBanners(bannerB, makeSponsorBannerTexture('#0b2228', '#d8b24a', 'PORT HERCULE', 'PRINCIPAUTÉ DE MONACO'));
 
-  // --- Port Hercule Moored Superyachts (Multi-deck Composite Hulls) ---
+  // --- Port Hercule Moored Superyachts (Strictly inside deep harbor water) ---
   const yachtHullGeo = makeYachtHullGeometry();
   const hullMat = new THREE.MeshStandardMaterial({ color: 0xf4f2ec, roughness: 0.25, metalness: 0.18 });
   const navyHullMat = new THREE.MeshStandardMaterial({ color: 0x16293d, roughness: 0.28, metalness: 0.25 });
@@ -1784,6 +1970,10 @@ export function buildMonacoTrack(scene) {
   const mastMat = new THREE.MeshStandardMaterial({ color: 0xe6e8ed, roughness: 0.3, metalness: 0.65 });
 
   for (let y = 0; y < 8; y++) {
+    const yx = 772 + (y % 2) * 44;
+    const yz = -260 + y * 58;
+    if (!isInsideHarborWater(yx, yz, -16)) continue;
+
     const yacht = new THREE.Group();
     const hull = new THREE.Mesh(yachtHullGeo, y % 3 === 0 ? navyHullMat : hullMat);
     hull.position.y = 0.0;
@@ -1817,7 +2007,7 @@ export function buildMonacoTrack(scene) {
     yacht.add(hull, teakDeck, mainCabin, mainGlass, upperDeck, bridgeGlass, mast, radomeL, radomeR);
     const sc = 0.9 + (y % 3) * 0.16;
     yacht.scale.setScalar(sc);
-    yacht.position.set(768 + (y % 2) * 44, -1.45, -260 + y * 58);
+    yacht.position.set(yx, -1.45, yz);
     yacht.rotation.y = -0.35 + (y % 3) * 0.14;
     scene.add(yacht);
   }

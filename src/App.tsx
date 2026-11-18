@@ -5,6 +5,17 @@ import { startMonacoEngine } from './game/engine.ts';
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [webglError, setWebglError] = useState<string | null>(null);
+  const [showMinimap, setShowMinimap] = useState(true);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'KeyN' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        setShowMinimap((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -108,14 +119,38 @@ export default function App() {
           </div>
         </section>
 
-        {/* Bottom-left · live minimap */}
-        <section id="minimap-panel" className="panel" aria-label="Circuit map">
-          <canvas id="minimap" />
-          <div id="minimap-meta">
-            <span id="minimap-label">CIRCUIT DE MONACO · 2.9 KM</span>
-            <span id="checkpoint-name">START / FINISH</span>
-          </div>
-        </section>
+        {/* Bottom-left · live minimap + [N] MAP toggle */}
+        {showMinimap ? (
+          <section id="minimap-panel" className="panel" aria-label="Circuit map">
+            <div id="minimap-head">
+              <span id="checkpoint-name">START / FINISH</span>
+              <button
+                type="button"
+                id="minimap-toggle"
+                onClick={() => setShowMinimap(false)}
+                aria-pressed="true"
+                title="Hide track minimap (N)"
+              >
+                [N] MAP
+              </button>
+            </div>
+            <canvas id="minimap" />
+            <div id="minimap-meta">
+              <span id="minimap-label">CIRCUIT DE MONACO - 3.34 KM</span>
+            </div>
+          </section>
+        ) : (
+          <button
+            type="button"
+            id="minimap-restore"
+            className="panel"
+            onClick={() => setShowMinimap(true)}
+            aria-pressed="false"
+            title="Show track minimap (N)"
+          >
+            [N] MAP
+          </button>
+        )}
 
         {/* Bottom-right · telemetry cluster */}
         <section id="telemetry" className="panel" aria-label="Car telemetry">
@@ -154,6 +189,7 @@ export default function App() {
           <span><b>A·D</b> STEER</span>
           <span><b>SPACE</b> DRS</span>
           <span><b>C</b> CAMERA</span>
+          <span><b>N</b> MAP</span>
           <span><b>R</b> RESET</span>
           <span><b>M</b> MUTE</span>
         </div>

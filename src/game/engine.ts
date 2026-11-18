@@ -37,6 +37,167 @@ function detectSoftwareWebGL(): boolean {
   }
 }
 
+function buildCloudClusterGeometry(
+  puffs: Array<{ x: number; y: number; z: number; rx: number; ry: number; rz: number }>
+): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let vertOffset = 0;
+
+  const baseSphere = new THREE.IcosahedronGeometry(1, 2);
+  const posAttr = baseSphere.getAttribute('position');
+  const normAttr = baseSphere.getAttribute('normal');
+  const idxAttr = baseSphere.getIndex();
+
+  for (const puff of puffs) {
+    for (let i = 0; i < posAttr.count; i++) {
+      const lx = posAttr.getX(i);
+      const ly = posAttr.getY(i);
+      const lz = posAttr.getZ(i);
+      // Flatten underside slightly for realistic cumulus cloud base
+      const flatY = ly < 0 ? ly * 0.62 : ly;
+      const wx = puff.x + lx * puff.rx;
+      const wy = puff.y + flatY * puff.ry;
+      const wz = puff.z + lz * puff.rz;
+      positions.push(wx, wy, wz);
+      if (wy < minY) minY = wy;
+      if (wy > maxY) maxY = wy;
+
+      const nx = normAttr.getX(i) / Math.max(0.1, puff.rx);
+      const ny = normAttr.getY(i) / Math.max(0.1, puff.ry);
+      const nz = normAttr.getZ(i) / Math.max(0.1, puff.rz);
+      const inv = 1 / (Math.hypot(nx, ny, nz) || 1);
+      normals.push(nx * inv, ny * inv, nz * inv);
+    }
+    if (idxAttr) {
+      for (let i = 0; i < idxAttr.count; i++) {
+        indices.push(vertOffset + idxAttr.getX(i));
+      }
+    } else {
+      for (let i = 0; i < posAttr.count; i++) indices.push(vertOffset + i);
+    }
+    vertOffset += posAttr.count;
+  }
+  baseSphere.dispose();
+
+  const spanY = Math.max(0.01, maxY - minY);
+  const localY = new Float32Array(positions.length / 3);
+  for (let i = 0; i < localY.length; i++) {
+    localY[i] = (positions[i * 3 + 1] - minY) / spanY;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('aLocalY', new THREE.BufferAttribute(localY, 1));
+  geo.setIndex(indices);
+  return geo;
+}
+
+function createMediterraneanClouds(scene: THREE.Scene, sunDir: THREE.Vector3) {
+  const cloudMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    fog: false,
+    uniforms: {
+      uSunDir: { value: sunDir.clone().normalize() },
+      uOpacity: { value: 0.92 },
+    },
+    vertexShader: `
+      attribute float aLocalY;
+      varying vec3 vWorldNormal;
+      varying vec3 vWorldPos;
+      varying float vHeight;
+      void main() {
+        vHeight = aLocalY;
+        vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uSunDir;
+      uniform float uOpacity;
+      varying vec3 vWorldNormal;
+      varying vec3 vWorldPos;
+      varying float vHeight;
+      void main() {
+        vec3 N = normalize(vWorldNormal);
+        vec3 V = normalize(cameraPosition - vWorldPos);
+        float ndv = abs(dot(N, V));
+        float softEdge = smoothstep(0.05, 0.56, ndv);
+
+        // Wrapped volumetric solar illumination + warm top dome + cool underside shadow
+        float wrapSun = clamp(dot(N, uSunDir) * 0.5 + 0.5, 0.0, 1.0);
+        float topDome = smoothstep(0.05, 0.88, vHeight);
+        float silverLining = pow(max(dot(-V, uSunDir), 0.0), 6.0) * (1.0 - ndv) * 0.42;
+
+        vec3 shadowCol = vec3(0.69, 0.78, 0.88);
+        vec3 midCol = vec3(0.92, 0.95, 0.99);
+        vec3 sunCol = vec3(1.0, 0.985, 0.945);
+
+        vec3 col = mix(shadowCol, midCol, smoothstep(0.0, 0.6, topDome * 0.65 + wrapSun * 0.35));
+        col = mix(col, sunCol, pow(wrapSun * 0.55 + topDome * 0.45, 1.35));
+        col += vec3(1.0, 0.97, 0.90) * silverLining;
+
+        gl_FragColor = vec4(col, softEdge * uOpacity);
+      }
+    `,
+  });
+
+  const prototypes = [
+    buildCloudClusterGeometry([
+      { x: 0, y: 2, z: 0, rx: 22, ry: 12, rz: 15 },
+      { x: -16, y: 0, z: 3, rx: 15, ry: 9.5, rz: 12 },
+      { x: 17, y: 0.5, z: -2, rx: 16, ry: 10, rz: 13 },
+      { x: -6, y: 8, z: -2, rx: 13, ry: 9, rz: 11 },
+      { x: 9, y: 9.5, z: 2, rx: 12, ry: 8.5, rz: 10 },
+      { x: -27, y: -2, z: -1, rx: 10, ry: 6.5, rz: 9 },
+      { x: 28, y: -1.5, z: 2, rx: 11, ry: 7, rz: 9 },
+    ]),
+    buildCloudClusterGeometry([
+      { x: 0, y: 3, z: 0, rx: 25, ry: 13, rz: 16 },
+      { x: -19, y: 1, z: -3, rx: 16, ry: 10, rz: 12 },
+      { x: 18, y: -0.5, z: 4, rx: 17, ry: 9.5, rz: 13 },
+      { x: 2, y: 11, z: 1, rx: 14, ry: 9.5, rz: 12 },
+      { x: -11, y: 8, z: 3, rx: 11, ry: 8, rz: 10 },
+      { x: 14, y: 7, z: -3, rx: 12, ry: 8, rz: 10 },
+      { x: -30, y: -2, z: 1, rx: 11, ry: 6.5, rz: 8.5 },
+    ]),
+    buildCloudClusterGeometry([
+      { x: 0, y: 1.5, z: 0, rx: 19, ry: 11, rz: 14 },
+      { x: -14, y: 0, z: 2, rx: 13, ry: 8.5, rz: 11 },
+      { x: 14, y: 0.5, z: -2, rx: 14, ry: 9, rz: 11 },
+      { x: 4, y: 8.5, z: 1, rx: 11, ry: 8, rz: 9.5 },
+      { x: -7, y: 6.5, z: -2, rx: 10, ry: 7.2, rz: 9 },
+    ]),
+  ];
+
+  const clouds: Array<{ mesh: THREE.Mesh; speed: number; baseZ: number }> = [];
+  const centerX = 340;
+  const centerZ = -140;
+  for (let i = 0; i < 20; i++) {
+    const ang = (i / 20) * Math.PI * 2 + (i % 3) * 0.14;
+    const rad = 460 + (i % 4) * 145;
+    const mesh = new THREE.Mesh(prototypes[i % prototypes.length], cloudMat);
+    const sc = 1.15 + (i % 5) * 0.24;
+    mesh.scale.set(sc, sc * 0.92, sc);
+    const cx = centerX + Math.cos(ang) * rad;
+    const cz = centerZ + Math.sin(ang) * rad;
+    mesh.position.set(cx, 130 + (i % 4) * 24, cz);
+    mesh.rotation.y = (i * 0.9) % (Math.PI * 2);
+    mesh.renderOrder = -1;
+    scene.add(mesh);
+    clouds.push({ mesh, speed: 1.6 + (i % 4) * 0.55, baseZ: cz });
+  }
+
+  return { clouds, cloudMat };
+}
+
 export interface EngineCallbacks {
   onWebGLError?: (msg: string) => void;
 }
@@ -107,17 +268,19 @@ export function startMonacoEngine(
   const sun = new THREE.DirectionalLight(0xfff4dc, 1.2);
   sun.castShadow = !isSoftwareGl;
   sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -140;
-  sun.shadow.camera.right = 140;
-  sun.shadow.camera.top = 140;
-  sun.shadow.camera.bottom = -140;
-  sun.shadow.camera.near = 50;
-  sun.shadow.camera.far = 900;
-  sun.shadow.bias = -0.0004;
-  sun.shadow.normalBias = 0.5;
+  sun.shadow.camera.left = -75;
+  sun.shadow.camera.right = 75;
+  sun.shadow.camera.top = 75;
+  sun.shadow.camera.bottom = -75;
+  sun.shadow.camera.near = 60;
+  sun.shadow.camera.far = 750;
+  sun.shadow.bias = -0.0003;
+  sun.shadow.normalBias = 0.025;
+  sun.shadow.radius = 2;
   scene.add(sun, sun.target);
 
-  // --- World + Player + AI Racers ---
+  // --- World + Mediterranean Clouds + Player + AI Racers ---
+  const { clouds, cloudMat } = createMediterraneanClouds(scene, sunDir);
   const trackData = buildMonacoTrack(scene);
   const playerCar = createF1Car(0xe10600, true);
   scene.add(playerCar);
@@ -360,6 +523,13 @@ export function startMonacoEngine(
     }
     renderer.toneMappingExposure += ((inTunnel ? 0.8 : 0.92) - renderer.toneMappingExposure) * k;
     if (bloom) bloom.strength += ((inTunnel ? 0.5 : 0.22) - bloom.strength) * k;
+    cloudMat.uniforms.uOpacity.value += ((inTunnel ? 0.12 : 0.92) - cloudMat.uniforms.uOpacity.value) * k;
+
+    for (const c of clouds) {
+      c.mesh.position.x += c.speed * dt;
+      if (c.mesh.position.x > 1450) c.mesh.position.x = -750;
+      c.mesh.position.z = c.baseZ;
+    }
 
     // Sync 3D gantry start lights
     if (raceState && Array.isArray(trackData.startFinishLine?.lights)) {
