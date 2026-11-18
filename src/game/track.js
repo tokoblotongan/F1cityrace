@@ -153,14 +153,42 @@ function makeAsphaltTextures() {
 }
 
 function makeCurbTexture() {
+  const W = 256;
+  const H = 512;
   const c = document.createElement('canvas');
-  c.width = 128;
-  c.height = 256;
+  c.width = W;
+  c.height = H;
   const g = c.getContext('2d');
-  for (let y = 0; y < 256; y += 64) {
-    g.fillStyle = (y / 64) % 2 === 0 ? '#e10600' : '#f2efe6';
-    g.fillRect(0, y, 128, 64);
+
+  for (let y = 0; y < H; y += 128) {
+    const isRed = (y / 128) % 2 === 0;
+    g.fillStyle = isRed ? '#d4160a' : '#eee9dc';
+    g.fillRect(0, y, W, 128);
+
+    // Subtle stone/paint bevel highlight & expansion joint seam
+    g.fillStyle = 'rgba(255, 255, 255, 0.14)';
+    g.fillRect(0, y + 2, W, 6);
+    g.fillStyle = 'rgba(12, 14, 18, 0.36)';
+    g.fillRect(0, y + 123, W, 5);
   }
+
+  // Outer edge bevel shadow
+  g.fillStyle = 'rgba(10, 12, 16, 0.25)';
+  g.fillRect(0, 0, 16, H);
+  g.fillRect(W - 16, 0, 16, H);
+
+  // Weathered apex rubber scuff marks & tire scrub streaks
+  for (let i = 0; i < 38; i++) {
+    const sy = (i * 83) % H;
+    const sx = 24 + ((i * 59) % (W - 72));
+    const sw = 18 + (i % 4) * 14;
+    const sh = 14 + (i % 3) * 12;
+    g.fillStyle = `rgba(18, 20, 24, ${0.14 + (i % 4) * 0.06})`;
+    g.beginPath();
+    g.ellipse(sx, sy, sw * 0.5, sh * 0.32, -0.35 + (i % 3) * 0.14, 0, Math.PI * 2);
+    g.fill();
+  }
+
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
@@ -187,27 +215,200 @@ function makeStartFinishTexture() {
   return tex;
 }
 
-function makeBarrierTexture() {
+function makeArmcoTextures() {
+  const W = 512;
+  const H = 256;
+  const alb = document.createElement('canvas');
+  alb.width = W; alb.height = H;
+  const ag = alb.getContext('2d');
+
+  const bmp = document.createElement('canvas');
+  bmp.width = W; bmp.height = H;
+  const bg = bmp.getContext('2d');
+
+  const rgh = document.createElement('canvas');
+  rgh.width = W; rgh.height = H;
+  const rg = rgh.getContext('2d');
+
+  // Galvanized steel base
+  ag.fillStyle = '#adb5c0';
+  ag.fillRect(0, 0, W, H);
+  bg.fillStyle = 'rgb(115, 115, 115)';
+  bg.fillRect(0, 0, W, H);
+  rg.fillStyle = 'rgb(110, 110, 110)';
+  rg.fillRect(0, 0, W, H);
+
+  // Subtle brushed / galvanized steel grain
+  for (let i = 0; i < 4200; i++) {
+    const x = (i * 97) % W;
+    const y = (i * 151) % H;
+    const v = 162 + (i % 34);
+    ag.fillStyle = `rgb(${v},${v + 4},${v + 10})`;
+    ag.fillRect(x, y, 6, 2);
+  }
+
+  // Triple-beam corrugated W-rail profile (3 horizontal beams across barrier height)
+  const beams = [22, 100, 178];
+  const beamH = 60;
+  for (const by of beams) {
+    // Albedo metallic W-beam highlight + deep central trough + lower shadow
+    const grad = ag.createLinearGradient(0, by, 0, by + beamH);
+    grad.addColorStop(0.0, '#626a75');
+    grad.addColorStop(0.18, '#e3e8f0');
+    grad.addColorStop(0.36, '#b7c0cc');
+    grad.addColorStop(0.50, '#5a626d');
+    grad.addColorStop(0.64, '#d9e0e8');
+    grad.addColorStop(0.84, '#b8c1cd');
+    grad.addColorStop(1.0, '#525963');
+    ag.fillStyle = grad;
+    ag.fillRect(0, by, W, beamH);
+
+    // Matching bump profile for sharp sunlight specular reflection along crests
+    const bGrad = bg.createLinearGradient(0, by, 0, by + beamH);
+    bGrad.addColorStop(0.0, 'rgb(45,45,45)');
+    bGrad.addColorStop(0.22, 'rgb(240,240,240)');
+    bGrad.addColorStop(0.50, 'rgb(52,52,52)');
+    bGrad.addColorStop(0.76, 'rgb(235,235,235)');
+    bGrad.addColorStop(1.0, 'rgb(42,42,42)');
+    bg.fillStyle = bGrad;
+    bg.fillRect(0, by, W, beamH);
+
+    // Polished crests vs rougher recessed troughs
+    const rGrad = rg.createLinearGradient(0, by, 0, by + beamH);
+    rGrad.addColorStop(0.0, 'rgb(155,155,155)');
+    rGrad.addColorStop(0.22, 'rgb(75,75,75)');
+    rGrad.addColorStop(0.50, 'rgb(165,165,165)');
+    rGrad.addColorStop(0.76, 'rgb(80,80,80)');
+    rGrad.addColorStop(1.0, 'rgb(155,155,155)');
+    rg.fillStyle = rGrad;
+    rg.fillRect(0, by, W, beamH);
+  }
+
+  // Vertical splice seams + galvanized hex bolts every 256px
+  for (const sx of [6, 262]) {
+    ag.fillStyle = 'rgba(20, 24, 30, 0.35)';
+    ag.fillRect(sx, 20, 5, H - 28);
+    bg.fillStyle = 'rgb(60, 60, 60)';
+    bg.fillRect(sx, 20, 4, H - 28);
+    for (const by of beams) {
+      for (const dy of [15, 45]) {
+        ag.fillStyle = '#dde3ec';
+        ag.beginPath();
+        ag.arc(sx + 10, by + dy, 3.5, 0, Math.PI * 2);
+        ag.fill();
+        bg.fillStyle = 'rgb(250, 250, 250)';
+        bg.beginPath();
+        bg.arc(sx + 10, by + dy, 3.5, 0, Math.PI * 2);
+        bg.fill();
+      }
+    }
+  }
+
+  // Monaco FIA red-and-white safety top rail stripe
+  ag.fillStyle = '#d4160a';
+  ag.fillRect(0, 0, 256, 18);
+  ag.fillStyle = '#f2efe6';
+  ag.fillRect(256, 0, 256, 18);
+  rg.fillStyle = 'rgb(140, 140, 140)';
+  rg.fillRect(0, 0, W, 18);
+
+  const setup = (canvas, isColor) => {
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.repeat.set(360, 1);
+    if (isColor) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  };
+
+  return {
+    map: setup(alb, true),
+    bumpMap: setup(bmp, false),
+    roughnessMap: setup(rgh, false),
+  };
+}
+
+function makeCatchFenceTextures() {
+  const W = 256;
+  const H = 256;
+  const alb = document.createElement('canvas');
+  alb.width = W; alb.height = H;
+  const ag = alb.getContext('2d');
+
+  const alp = document.createElement('canvas');
+  alp.width = W; alp.height = H;
+  const pg = alp.getContext('2d');
+
+  ag.fillStyle = '#6f7885';
+  ag.fillRect(0, 0, W, H);
+  pg.fillStyle = '#000000';
+  pg.fillRect(0, 0, W, H);
+
+  // Welded FIA steel wire-mesh grid
+  pg.strokeStyle = '#d8d8d8';
+  pg.lineWidth = 2;
+  ag.strokeStyle = '#8b95a3';
+  ag.lineWidth = 2;
+  const step = 16;
+  for (let x = 0; x <= W; x += step) {
+    pg.beginPath(); pg.moveTo(x, 0); pg.lineTo(x, H); pg.stroke();
+    ag.beginPath(); ag.moveTo(x, 0); ag.lineTo(x, H); ag.stroke();
+  }
+  for (let y = 0; y <= H; y += step) {
+    pg.beginPath(); pg.moveTo(0, y); pg.lineTo(W, y); pg.stroke();
+    ag.beginPath(); ag.moveTo(0, y); ag.lineTo(W, y); ag.stroke();
+  }
+
+  // Heavy horizontal steel tension cables across catch-fencing
+  for (const cy of [4, 76, 152, 248]) {
+    pg.fillStyle = '#ffffff';
+    pg.fillRect(0, cy - 2, W, 5);
+    ag.fillStyle = '#cfd6e0';
+    ag.fillRect(0, cy - 2, W, 5);
+  }
+
+  const map = new THREE.CanvasTexture(alb);
+  map.wrapS = THREE.RepeatWrapping;
+  map.wrapT = THREE.ClampToEdgeWrapping;
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 8;
+
+  const alphaMap = new THREE.CanvasTexture(alp);
+  alphaMap.wrapS = THREE.RepeatWrapping;
+  alphaMap.wrapT = THREE.ClampToEdgeWrapping;
+  alphaMap.anisotropy = 8;
+
+  return { map, alphaMap };
+}
+
+function makeDistanceBoardTexture(distText) {
   const c = document.createElement('canvas');
-  c.width = 512;
-  c.height = 128;
+  c.width = 256;
+  c.height = 192;
   const g = c.getContext('2d');
-  g.fillStyle = '#c9cdd4';
-  g.fillRect(0, 0, 512, 128);
-  // Armco horizontal corrugation
-  g.fillStyle = '#8b93a0';
-  g.fillRect(0, 26, 512, 14);
-  g.fillRect(0, 82, 512, 14);
-  // Monaco red & white accent stripe
-  g.fillStyle = '#e10600';
-  g.fillRect(0, 0, 256, 20);
-  g.fillStyle = '#f2efe6';
-  g.fillRect(256, 0, 256, 20);
+
+  // Reflective white FIA braking marker background
+  g.fillStyle = '#f5f2ea';
+  g.fillRect(0, 0, 256, 192);
+
+  // Red FIA border + top marshal accent bar
+  g.fillStyle = '#d4160a';
+  g.fillRect(0, 0, 256, 16);
+  g.fillRect(0, 178, 256, 14);
+  g.fillRect(0, 0, 12, 192);
+  g.fillRect(244, 0, 12, 192);
+
+  // Bold distance numerals (150 / 100 / 50)
+  g.fillStyle = '#11151d';
+  g.font = '900 108px "Titillium Web", sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(distText, 128, 102);
+
   const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.repeat.set(260, 1);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
   return tex;
 }
 
@@ -658,25 +859,105 @@ function makePalmFrondTexture() {
 
 function makeSponsorBannerTexture(primary, accent, title, sub) {
   const c = document.createElement('canvas');
-  c.width = 512; c.height = 128;
+  c.width = 1024; c.height = 256;
   const g = c.getContext('2d');
   g.fillStyle = primary;
-  g.fillRect(0, 0, 512, 128);
+  g.fillRect(0, 0, 1024, 256);
+
+  // Subtle horizontal brushed sheen
+  const sheen = g.createLinearGradient(0, 0, 0, 256);
+  sheen.addColorStop(0, 'rgba(255,255,255,0.08)');
+  sheen.addColorStop(0.5, 'rgba(255,255,255,0.0)');
+  sheen.addColorStop(1, 'rgba(0,0,0,0.22)');
+  g.fillStyle = sheen;
+  g.fillRect(0, 0, 1024, 256);
+
+  // Motorsport side chevrons & bottom trim bar
   g.fillStyle = accent;
-  g.fillRect(0, 0, 28, 128);
-  g.fillRect(484, 0, 28, 128);
-  g.fillRect(0, 108, 512, 20);
+  g.fillRect(0, 0, 46, 256);
+  g.fillRect(978, 0, 46, 256);
+  g.fillRect(0, 224, 1024, 32);
   g.fillStyle = '#f8f5ec';
-  g.font = '900 42px sans-serif';
+  g.fillRect(54, 16, 916, 5);
+
+  g.fillStyle = '#f8f5ec';
+  g.font = '900 84px sans-serif';
   g.textAlign = 'center';
-  g.fillText(title, 256, 60);
+  g.fillText(title, 512, 124);
   g.fillStyle = accent;
-  g.font = '700 20px sans-serif';
-  g.fillText(sub, 256, 92);
+  g.font = '800 38px sans-serif';
+  g.fillText(sub, 512, 186);
+
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
   return tex;
+}
+
+function mergeBoxParts(parts) {
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+  let vertOffset = 0;
+
+  for (const part of parts) {
+    const box = new THREE.BoxGeometry(part.w, part.h, part.d);
+    if (part.rx) box.rotateX(part.rx);
+    if (part.ry) box.rotateY(part.ry);
+    if (part.rz) box.rotateZ(part.rz);
+    box.translate(part.x || 0, part.y || 0, part.z || 0);
+
+    const pos = box.getAttribute('position');
+    const norm = box.getAttribute('normal');
+    const uv = box.getAttribute('uv');
+    const idx = box.getIndex();
+    for (let i = 0; i < pos.count; i++) {
+      positions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+      normals.push(norm.getX(i), norm.getY(i), norm.getZ(i));
+      uvs.push(uv.getX(i), uv.getY(i));
+    }
+    if (idx) {
+      for (let i = 0; i < idx.count; i++) indices.push(vertOffset + idx.getX(i));
+    }
+    vertOffset += pos.count;
+    box.dispose();
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  return geo;
+}
+
+function makeIBeamPostGeometry() {
+  // Galvanized steel I-beam support post (height 1.52m, grounded -0.35..+1.17)
+  return mergeBoxParts([
+    { w: 0.14, h: 1.52, d: 0.03, x: 0, y: 0.41, z: 0.06 },
+    { w: 0.14, h: 1.52, d: 0.03, x: 0, y: 0.41, z: -0.06 },
+    { w: 0.032, h: 1.52, d: 0.10, x: 0, y: 0.41, z: 0 },
+  ]);
+}
+
+function makeCatchFencePoleGeometry() {
+  // Vertical mast (1.05..3.25) + cranked inward-angled cantilever arm (tilted +Z toward track)
+  return mergeBoxParts([
+    { w: 0.08, h: 2.2, d: 0.08, x: 0, y: 2.15, z: 0 },
+    { w: 0.075, h: 0.65, d: 0.075, x: 0, y: 3.52, z: 0.17, rx: 0.55 },
+    { w: 0.14, h: 0.08, d: 0.18, x: 0, y: 1.12, z: 0 },
+  ]);
+}
+
+function makeTecproBlockGeometry() {
+  // Cushioned Tecpro barrier block with molded vertical energy-absorption ribs
+  return mergeBoxParts([
+    { w: 2.15, h: 1.06, d: 0.72, x: 0, y: 0.53, z: 0 },
+    { w: 0.45, h: 1.10, d: 0.80, x: -0.72, y: 0.55, z: 0 },
+    { w: 0.45, h: 1.10, d: 0.80, x: 0, y: 0.55, z: 0 },
+    { w: 0.45, h: 1.10, d: 0.80, x: 0.72, y: 0.55, z: 0 },
+  ]);
 }
 
 function makeTiledBuildingGeo(uRepeat, vRepeat) {
@@ -872,40 +1153,61 @@ function buildWallRibbon(samples, latOffset, height, thickness, mat) {
   const uvs = [];
   const indices = [];
 
-  const inner = latOffset - Math.sign(latOffset) * (thickness * 0.5);
-  const outer = latOffset + Math.sign(latOffset) * (thickness * 0.5);
+  const sideSign = Math.sign(latOffset) || 1;
+  const innerBase = latOffset - sideSign * (thickness * 0.5);
+  const outerBase = latOffset + sideSign * (thickness * 0.5);
+
+  // 12-point triple-beam corrugated Armco W-rail cross section:
+  // 10 points up the track-facing corrugated face (hFrac 0..1) + 2 rear wall points (top, bot)
+  const profile = [
+    { h: 0.00, protrude: -0.02 },
+    { h: 0.11, protrude: 0.08 },
+    { h: 0.21, protrude: -0.04 },
+    { h: 0.31, protrude: 0.08 },
+    { h: 0.42, protrude: -0.02 },
+    { h: 0.52, protrude: 0.08 },
+    { h: 0.62, protrude: -0.04 },
+    { h: 0.72, protrude: 0.08 },
+    { h: 0.85, protrude: -0.02 },
+    { h: 1.00, protrude: 0.06 },
+  ];
+  const ptsPerRing = profile.length + 2; // + outerTop, outerBot
 
   for (let i = 0; i <= N; i++) {
     const idx = i % N;
     const p = samples.pos[idx];
     const r = samples.right[idx];
-    const v = i / N;
-
-    const ix = p.x + r.x * inner;
-    const iz = p.z + r.z * inner;
-    const ox = p.x + r.x * outer;
-    const oz = p.z + r.z * outer;
+    const uCoord = i / N;
     const y0 = p.y - 0.15;
-    const y1 = p.y + height;
+    const hSpan = height + 0.15;
 
-    // 4 vertices per cross section: inner-bot, inner-top, outer-top, outer-bot
-    positions.push(
-      ix, y0, iz,
-      ix, y1, iz,
-      ox, y1, oz,
-      ox, y0, oz
-    );
-    uvs.push(v, 0, v, 1, v, 1, v, 0);
+    for (const pt of profile) {
+      const lat = innerBase - sideSign * pt.protrude;
+      positions.push(p.x + r.x * lat, y0 + pt.h * hSpan, p.z + r.z * lat);
+      uvs.push(uCoord, pt.h);
+    }
+
+    const ox = p.x + r.x * outerBase;
+    const oz = p.z + r.z * outerBase;
+    positions.push(ox, y0 + hSpan, oz);
+    uvs.push(uCoord, 1);
+    positions.push(ox, y0, oz);
+    uvs.push(uCoord, 0);
 
     if (i < N) {
-      const b = i * 4;
-      const nb = (i + 1) * 4;
-      // inner face
-      indices.push(b, b + 1, nb, b + 1, nb + 1, nb);
-      // top cap
-      indices.push(b + 1, b + 2, nb + 1, b + 2, nb + 2, nb + 1);
-      // outer face
-      indices.push(b + 2, b + 3, nb + 2, b + 3, nb + 3, nb + 2);
+      const b = i * ptsPerRing;
+      const nb = (i + 1) * ptsPerRing;
+      for (let s = 0; s < ptsPerRing - 1; s++) {
+        const a0 = b + s;
+        const a1 = b + s + 1;
+        const b0 = nb + s;
+        const b1 = nb + s + 1;
+        if (sideSign > 0) {
+          indices.push(a0, a1, b0, a1, b1, b0);
+        } else {
+          indices.push(a0, b0, a1, a1, b0, b1);
+        }
+      }
     }
   }
 
@@ -917,6 +1219,54 @@ function buildWallRibbon(samples, latOffset, height, thickness, mat) {
   const mesh = new THREE.Mesh(geo, mat);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
+  return mesh;
+}
+
+function buildCatchFenceRibbon(samples, latOffset, uStart, uEnd, totalLength, mat) {
+  const startIdx = Math.max(0, Math.floor(uStart * samples.count));
+  const endIdx = Math.min(samples.count, Math.ceil(uEnd * samples.count));
+  if (endIdx <= startIdx) return null;
+
+  const sideSign = Math.sign(latOffset) || 1;
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+  const segLen = (uEnd - uStart) * totalLength;
+  const repeatU = Math.max(1, segLen / 2.6);
+
+  // 3 vertical levels per slice: Armco top (1.15m), vertical top (3.25m), angled inward lip (3.78m, 0.34m inward)
+  for (let i = startIdx; i <= endIdx; i++) {
+    const idx = i % samples.count;
+    const p = samples.pos[idx];
+    const r = samples.right[idx];
+    const uFrac = ((i - startIdx) / (endIdx - startIdx)) * repeatU;
+
+    const baseLat = latOffset;
+    const topLat = latOffset - sideSign * 0.34;
+
+    positions.push(
+      p.x + r.x * baseLat, p.y + 1.15, p.z + r.z * baseLat,
+      p.x + r.x * baseLat, p.y + 3.25, p.z + r.z * baseLat,
+      p.x + r.x * topLat, p.y + 3.78, p.z + r.z * topLat
+    );
+    uvs.push(uFrac, 0, uFrac, 0.78, uFrac, 1);
+
+    if (i < endIdx) {
+      const b = (i - startIdx) * 3;
+      const nb = b + 3;
+      for (let s = 0; s < 2; s++) {
+        indices.push(b + s, b + s + 1, nb + s, b + s + 1, nb + s + 1, nb + s);
+      }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 2;
   return mesh;
 }
 
@@ -1045,14 +1395,240 @@ export function buildMonacoTrack(scene) {
   scene.add(buildRibbon(samples, -HALF_WIDTH - 1.05, -HALF_WIDTH + 0.05, 0.025, curbMat));
   scene.add(buildRibbon(samples, HALF_WIDTH - 0.05, HALF_WIDTH + 1.05, 0.025, curbMat));
 
-  // Safety barriers
+  // Safety barriers: Triple-Beam Corrugated Armco Steel Guardrails
+  const armcoTex = makeArmcoTextures();
   const barrierMat = new THREE.MeshStandardMaterial({
-    map: makeBarrierTexture(),
-    roughness: 0.45,
-    metalness: 0.35,
+    map: armcoTex.map,
+    bumpMap: armcoTex.bumpMap,
+    bumpScale: 0.08,
+    roughnessMap: armcoTex.roughnessMap,
+    roughness: 0.35,
+    metalness: 0.75,
   });
   scene.add(buildWallRibbon(samples, -HALF_WIDTH - 1.15, 1.15, 0.45, barrierMat));
   scene.add(buildWallRibbon(samples, HALF_WIDTH + 1.15, 1.15, 0.45, barrierMat));
+
+  // Vertical Steel I-Beam Support Posts every 2.5m (single InstancedMesh)
+  const postDummy = new THREE.Object3D();
+  const iBeamSpecs = [];
+  const postStepU = 2.5 / totalLength;
+  for (let u = 0; u < 1; u += postStepU) {
+    if (u >= tunnelStart && u <= tunnelEnd) continue;
+    const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
+    const p = pos[idx];
+    const r = right[idx];
+    for (const side of [-1, 1]) {
+      iBeamSpecs.push({
+        x: p.x + r.x * side * (HALF_WIDTH + 1.38),
+        y: p.y,
+        z: p.z + r.z * side * (HALF_WIDTH + 1.38),
+        yaw: Math.atan2(-side * r.x, -side * r.z),
+      });
+    }
+  }
+  if (iBeamSpecs.length) {
+    const iBeamMat = new THREE.MeshStandardMaterial({
+      color: 0x9aa3ae,
+      roughness: 0.38,
+      metalness: 0.75,
+    });
+    const iBeamIM = new THREE.InstancedMesh(makeIBeamPostGeometry(), iBeamMat, iBeamSpecs.length);
+    iBeamIM.castShadow = true;
+    iBeamIM.receiveShadow = true;
+    iBeamSpecs.forEach((spPost, i) => {
+      postDummy.position.set(spPost.x, spPost.y, spPost.z);
+      postDummy.rotation.set(0, spPost.yaw, 0);
+      postDummy.scale.set(1, 1, 1);
+      postDummy.updateMatrix();
+      iBeamIM.setMatrixAt(i, postDummy.matrix);
+    });
+    iBeamIM.instanceMatrix.needsUpdate = true;
+    iBeamIM.computeBoundingSphere();
+    scene.add(iBeamIM);
+  }
+
+  // FIA Catch-Fencing & Cranked Steel Fence Poles along Spectator & Harbor Sections
+  const fenceTex = makeCatchFenceTextures();
+  const catchFenceMat = new THREE.MeshStandardMaterial({
+    map: fenceTex.map,
+    alphaMap: fenceTex.alphaMap,
+    transparent: true,
+    alphaTest: 0.14,
+    depthWrite: false,
+    roughness: 0.45,
+    metalness: 0.7,
+    side: THREE.DoubleSide,
+  });
+  const catchFenceZones = [
+    { uStart: 0.0, uEnd: 0.145, sides: [-1, 1] },
+    { uStart: 0.20, uEnd: 0.36, sides: [-1, 1] },
+    { uStart: Math.min(0.88, tunnelEnd + 0.008), uEnd: 0.895, sides: [-1, 1] },
+    { uStart: 0.895, uEnd: 1.0, sides: [-1, 1] },
+  ];
+  const fencePoleSpecs = [];
+  const fencePoleStepU = 5.0 / totalLength;
+  for (const zone of catchFenceZones) {
+    for (const side of zone.sides) {
+      const fenceMesh = buildCatchFenceRibbon(
+        samples,
+        side * (HALF_WIDTH + 1.25),
+        zone.uStart,
+        zone.uEnd,
+        totalLength,
+        catchFenceMat
+      );
+      if (fenceMesh) scene.add(fenceMesh);
+
+      for (let u = zone.uStart; u <= zone.uEnd; u += fencePoleStepU) {
+        const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
+        const p = pos[idx];
+        const r = right[idx];
+        fencePoleSpecs.push({
+          x: p.x + r.x * side * (HALF_WIDTH + 1.28),
+          y: p.y,
+          z: p.z + r.z * side * (HALF_WIDTH + 1.28),
+          yaw: Math.atan2(-side * r.x, -side * r.z),
+        });
+      }
+    }
+  }
+  if (fencePoleSpecs.length) {
+    const poleMat = new THREE.MeshStandardMaterial({
+      color: 0xa5aeb8,
+      roughness: 0.36,
+      metalness: 0.78,
+    });
+    const fencePoleIM = new THREE.InstancedMesh(makeCatchFencePoleGeometry(), poleMat, fencePoleSpecs.length);
+    fencePoleIM.castShadow = true;
+    fencePoleSpecs.forEach((fp, i) => {
+      postDummy.position.set(fp.x, fp.y, fp.z);
+      postDummy.rotation.set(0, fp.yaw, 0);
+      postDummy.scale.set(1, 1, 1);
+      postDummy.updateMatrix();
+      fencePoleIM.setMatrixAt(i, postDummy.matrix);
+    });
+    fencePoleIM.instanceMatrix.needsUpdate = true;
+    fencePoleIM.computeBoundingSphere();
+    scene.add(fencePoleIM);
+  }
+
+  // Cushioned Tecpro Impact Barriers at Sharp Corner Run-Offs (InstancedMesh)
+  const tecproCorners = [
+    { u: uAtPoint(TRACK_POINTS[4]), side: -1, count: 6, blueTheme: false }, // Sainte-Devote
+    { u: uAtPoint(TRACK_POINTS[9]), side: -1, count: 5, blueTheme: true },  // Casino Square
+    { u: uAtPoint(TRACK_POINTS[12]), side: -1, count: 5, blueTheme: false }, // Mirabeau
+    { u: uAtPoint(TRACK_POINTS[15]), side: -1, count: 6, blueTheme: true },  // Fairmont Hairpin
+    { u: uAtPoint(TRACK_POINTS[23]), side: -1, count: 7, blueTheme: false }, // Nouvelle Chicane entry
+    { u: uAtPoint(TRACK_POINTS[24]), side: 1, count: 5, blueTheme: true },   // Nouvelle Chicane harbor wall
+    { u: uAtPoint(TRACK_POINTS[27]), side: -1, count: 6, blueTheme: false }, // Piscine
+    { u: uAtPoint(TRACK_POINTS[31]), side: -1, count: 6, blueTheme: false }, // La Rascasse
+    { u: uAtPoint(TRACK_POINTS[33]), side: -1, count: 5, blueTheme: true },  // Anthony Noghes
+  ];
+  const tecproSpecs = [];
+  const blockStepU = 2.2 / totalLength;
+  for (const tc of tecproCorners) {
+    const startBlockU = tc.u - (tc.count * 0.5) * blockStepU;
+    for (let k = 0; k < tc.count; k++) {
+      const u = ((startBlockU + k * blockStepU) % 1 + 1) % 1;
+      const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
+      const p = pos[idx];
+      const r = right[idx];
+      const colHex =
+        k % 2 === 1 ? 0xf2efe6 : tc.blueTheme ? 0x0057b8 : 0xe10600;
+      tecproSpecs.push({
+        x: p.x + r.x * tc.side * (HALF_WIDTH + 0.72),
+        y: p.y,
+        z: p.z + r.z * tc.side * (HALF_WIDTH + 0.72),
+        yaw: Math.atan2(-tc.side * r.x, -tc.side * r.z),
+        col: colHex,
+      });
+    }
+  }
+  if (tecproSpecs.length) {
+    const tecproMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.58,
+      metalness: 0.05,
+    });
+    const tecproIM = new THREE.InstancedMesh(makeTecproBlockGeometry(), tecproMat, tecproSpecs.length);
+    const tcColor = new THREE.Color();
+    tecproIM.castShadow = true;
+    tecproIM.receiveShadow = true;
+    tecproSpecs.forEach((tp, i) => {
+      postDummy.position.set(tp.x, tp.y, tp.z);
+      postDummy.rotation.set(0, tp.yaw, 0);
+      postDummy.scale.set(1, 1, 1);
+      postDummy.updateMatrix();
+      tecproIM.setMatrixAt(i, postDummy.matrix);
+      tecproIM.setColorAt(i, tcColor.setHex(tp.col));
+    });
+    tecproIM.instanceMatrix.needsUpdate = true;
+    if (tecproIM.instanceColor) tecproIM.instanceColor.needsUpdate = true;
+    tecproIM.computeBoundingSphere();
+    scene.add(tecproIM);
+  }
+
+  // Marshal Braking Distance Marker Boards (150, 100, 50m before major corners)
+  const brakingZones = [
+    { cornerU: uAtPoint(TRACK_POINTS[4]), side: -1 },  // Into Sainte-Devote
+    { cornerU: uAtPoint(TRACK_POINTS[12]), side: -1 }, // Into Mirabeau
+    { cornerU: uAtPoint(TRACK_POINTS[23]), side: -1 }, // Into Nouvelle Chicane
+    { cornerU: uAtPoint(TRACK_POINTS[31]), side: -1 }, // Into La Rascasse
+  ];
+  const distBoardBuckets = { '150': [], '100': [], '50': [] };
+  const boardPostSpecs = [];
+  for (const bz of brakingZones) {
+    for (const [label, metersBack] of [['150', 150], ['100', 100], ['50', 50]]) {
+      const u = ((bz.cornerU - metersBack / totalLength) % 1 + 1) % 1;
+      if (u >= tunnelStart && u <= tunnelEnd) continue;
+      const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
+      const p = pos[idx];
+      const r = right[idx];
+      const t = tan[idx];
+      const bx = p.x + r.x * bz.side * (HALF_WIDTH + 1.48);
+      const bzz = p.z + r.z * bz.side * (HALF_WIDTH + 1.48);
+      const faceYaw = Math.atan2(-t.x, -t.z);
+      distBoardBuckets[label].push({ x: bx, y: p.y + 1.82, z: bzz, yaw: faceYaw });
+      boardPostSpecs.push({ x: bx, y: p.y + 0.9, z: bzz, yaw: faceYaw });
+    }
+  }
+  if (boardPostSpecs.length) {
+    const legGeo = new THREE.BoxGeometry(0.08, 1.85, 0.08);
+    const legMat = new THREE.MeshStandardMaterial({ color: 0x262c36, metalness: 0.7, roughness: 0.4 });
+    const legIM = new THREE.InstancedMesh(legGeo, legMat, boardPostSpecs.length);
+    boardPostSpecs.forEach((bp, i) => {
+      postDummy.position.set(bp.x, bp.y, bp.z);
+      postDummy.rotation.set(0, bp.yaw, 0);
+      postDummy.scale.set(1, 1, 1);
+      postDummy.updateMatrix();
+      legIM.setMatrixAt(i, postDummy.matrix);
+    });
+    legIM.instanceMatrix.needsUpdate = true;
+    legIM.computeBoundingSphere();
+    scene.add(legIM);
+  }
+  const boardGeo = new THREE.BoxGeometry(1.45, 1.05, 0.08);
+  for (const label of ['150', '100', '50']) {
+    const specs = distBoardBuckets[label];
+    if (!specs.length) continue;
+    const bMat = new THREE.MeshStandardMaterial({
+      map: makeDistanceBoardTexture(label),
+      roughness: 0.4,
+      metalness: 0.1,
+    });
+    const bIM = new THREE.InstancedMesh(boardGeo, bMat, specs.length);
+    bIM.castShadow = true;
+    specs.forEach((spBoard, i) => {
+      postDummy.position.set(spBoard.x, spBoard.y, spBoard.z);
+      postDummy.rotation.set(0, spBoard.yaw, 0);
+      postDummy.scale.set(1, 1, 1);
+      postDummy.updateMatrix();
+      bIM.setMatrixAt(i, postDummy.matrix);
+    });
+    bIM.instanceMatrix.needsUpdate = true;
+    bIM.computeBoundingSphere();
+    scene.add(bIM);
+  }
 
   // DRS zone green strips
   const drsMat = new THREE.MeshStandardMaterial({
@@ -1918,35 +2494,31 @@ export function buildMonacoTrack(scene) {
     scene.add(crowdIM);
   }
 
-  // --- Armco Barrier Sponsor Banners ---
-  const bannerA = [];
-  const bannerB = [];
-  for (let i = 0; i < 44; i++) {
-    const idx = Math.floor((i / 44) * SAMPLE_COUNT);
+  // --- Armco Barrier Sponsor Boards (4 Crisp High-Res Circuit Sponsors via InstancedMesh) ---
+  const bannerBuckets = [[], [], [], []];
+  for (let i = 0; i < 64; i++) {
+    const idx = Math.floor((i / 64) * SAMPLE_COUNT);
     const u = idx / SAMPLE_COUNT;
     if (u >= tunnelStart && u <= tunnelEnd) continue;
     const p = pos[idx];
     const r = right[idx];
-    const t = tan[idx];
     const side = i % 2 === 0 ? 1 : -1;
-    const bx = p.x + r.x * side * (HALF_WIDTH + 1.15);
-    const bz = p.z + r.z * side * (HALF_WIDTH + 1.15);
-    const spec = {
+    const bx = p.x + r.x * side * (HALF_WIDTH + 1.16);
+    const bz = p.z + r.z * side * (HALF_WIDTH + 1.16);
+    bannerBuckets[i % 4].push({
       x: bx,
-      y: p.y + 1.55,
+      y: p.y + 1.48,
       z: bz,
       yaw: Math.atan2(-side * r.x, -side * r.z),
-      tYaw: Math.atan2(t.x, t.z),
-    };
-    if (i % 2 === 0) bannerA.push(spec);
-    else bannerB.push(spec);
+    });
   }
 
   const spawnBanners = (specs, tex) => {
     if (!specs.length) return;
-    const bGeo = new THREE.BoxGeometry(6.8, 0.95, 0.14);
-    const bMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.48, metalness: 0.1 });
+    const bGeo = new THREE.BoxGeometry(6.8, 0.95, 0.12);
+    const bMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.44, metalness: 0.12 });
     const im = new THREE.InstancedMesh(bGeo, bMat, specs.length);
+    im.castShadow = true;
     specs.forEach((b, i) => {
       dummy.position.set(b.x, b.y, b.z);
       dummy.rotation.set(0, b.yaw, 0);
@@ -1958,8 +2530,10 @@ export function buildMonacoTrack(scene) {
     im.computeBoundingSphere();
     scene.add(im);
   };
-  spawnBanners(bannerA, makeSponsorBannerTexture('#121722', '#e10600', 'MONACO GP', 'MONTE-CARLO STREET CIRCUIT'));
-  spawnBanners(bannerB, makeSponsorBannerTexture('#0b2228', '#d8b24a', 'PORT HERCULE', 'PRINCIPAUTÉ DE MONACO'));
+  spawnBanners(bannerBuckets[0], makeSponsorBannerTexture('#121722', '#e10600', 'MONACO GP', 'MONTE-CARLO STREET CIRCUIT'));
+  spawnBanners(bannerBuckets[1], makeSponsorBannerTexture('#0b2228', '#d8b24a', 'PORT HERCULE', 'PRINCIPAUTÉ DE MONACO'));
+  spawnBanners(bannerBuckets[2], makeSponsorBannerTexture('#10233f', '#00d2be', 'MONTE-CARLO', 'FIA GRADE 1 STREET CIRCUIT'));
+  spawnBanners(bannerBuckets[3], makeSponsorBannerTexture('#1d1118', '#f2efe6', 'GRAND PRIX', 'AUTOMOBILE CLUB DE MONACO'));
 
   // --- Port Hercule Moored Superyachts (Strictly inside deep harbor water) ---
   const yachtHullGeo = makeYachtHullGeometry();
