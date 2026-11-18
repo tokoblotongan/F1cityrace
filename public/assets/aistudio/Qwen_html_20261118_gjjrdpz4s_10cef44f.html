@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0f16" />
+<meta name="description" content="Monaco GP: Street Circuit Challenge — a modular Three.js Formula 1 race through Monte Carlo with live broadcast HUD and synthesized V6 turbo-hybrid audio." />
+<title>Monaco GP — Street Circuit Challenge</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23e10600'/%3E%3Ctext x='32' y='44' font-family='Arial' font-size='36' font-weight='900' font-style='italic' text-anchor='middle' fill='%23f2efe6'%3EM%3C/text%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Titillium+Web:ital,wght@0,400;0,600;0,700;0,900;1,700;1,900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+
+<!-- ══ WebGL stage ══ -->
+<canvas id="game-canvas" aria-label="Monaco GP 3D race view"></canvas>
+
+<!-- ══ Boot / loading gate ══ -->
+<div id="boot">
+  <div id="boot-mark">M</div>
+  <div id="boot-title">MONACO GP</div>
+  <div id="boot-sub">STREET CIRCUIT CHALLENGE</div>
+  <div id="boot-track"><div id="boot-bar"></div></div>
+  <div id="boot-note">Building Circuit de Monaco…</div>
+  <button id="boot-retry" onclick="location.reload()" hidden>RETRY</button>
+</div>
+
+<!-- ══ Broadcast HUD overlay ══ -->
+<div id="hud">
+  <div class="vignette" aria-hidden="true"></div>
+  <div id="flash" aria-hidden="true"></div>
+
+  <!-- Top-left · live leaderboard tower -->
+  <section id="tower" class="panel" aria-label="Live standings">
+    <header class="panel-head">
+      <span class="live-dot" aria-hidden="true"></span>
+      <span class="head-title">MONACO GP</span>
+      <span class="live-tag">LIVE</span>
+    </header>
+    <div id="tower-rows"></div>
+    <footer id="tower-foot">CIRCUIT DE MONACO · <span id="tower-laps">3 LAPS</span></footer>
+  </section>
+
+  <!-- Top-right · lap / timing / start gantry -->
+  <section id="lap-panel" class="panel" aria-label="Lap and timing">
+    <header class="panel-head">
+      <span class="head-title" id="session-label">RACE</span>
+      <button id="audio-toggle" aria-pressed="true" title="Mute / unmute (M)">
+        <span id="audio-icon">🔊</span><span id="audio-text">AUDIO ON</span>
+      </button>
+    </header>
+    <div id="lap-count">LAP <span id="lap-current">1</span><span class="lap-sep">/</span><span id="lap-total">3</span></div>
+    <div class="timer-row"><label>CURRENT</label><span id="lap-time" class="mono">0:00.000</span></div>
+    <div class="timer-row"><label>BEST</label><span id="best-time" class="mono">--:--.---</span></div>
+    <div class="timer-row"><label>LAST</label><span id="last-time" class="mono">--:--.---</span></div>
+    <div id="gantry-wrap">
+      <div id="gantry" aria-label="Start lights">
+        <div class="gantry-light"></div><div class="gantry-light"></div><div class="gantry-light"></div><div class="gantry-light"></div><div class="gantry-light"></div>
+      </div>
+      <div id="gantry-status">START SEQUENCE</div>
+    </div>
+  </section>
+
+  <!-- Bottom-left · live minimap -->
+  <section id="minimap-panel" class="panel" aria-label="Circuit map">
+    <canvas id="minimap"></canvas>
+    <div id="minimap-meta">
+      <span id="minimap-label">CIRCUIT DE MONACO · 2.9 KM</span>
+      <span id="checkpoint-name">START / FINISH</span>
+    </div>
+  </section>
+
+  <!-- Bottom-right · telemetry cluster -->
+  <section id="telemetry" class="panel" aria-label="Car telemetry">
+    <div id="rpm-bar" aria-label="RPM shift lights"></div>
+    <div id="tele-main">
+      <div id="gear-box"><label>GEAR</label><div id="gear-value">1</div></div>
+      <div id="speed-box"><div id="speed-value">0</div><div id="speed-unit">KM/H</div></div>
+      <div id="drs-badge">DRS</div>
+    </div>
+    <div id="pedal-bars">
+      <div class="pedal"><label>THR</label><div class="pedal-track"><div id="throttle-bar"></div></div></div>
+      <div class="pedal"><label>BRK</label><div class="pedal-track"><div id="brake-bar"></div></div></div>
+    </div>
+  </section>
+
+  <!-- Bottom-center · control legend -->
+  <div id="controls-hint">
+    <span><b>W/↑</b> THROTTLE</span><span><b>S/↓</b> BRAKE</span><span><b>A·D</b> STEER</span>
+    <span><b>SPACE</b> DRS</span><span><b>C</b> CAMERA</span><span><b>R</b> RESET</span><span><b>M</b> MUTE</span>
+  </div>
+
+  <!-- Center · race announcements -->
+  <div id="announce" aria-live="polite">
+    <div id="announce-text"></div>
+    <div id="announce-sub"></div>
+  </div>
+
+  <!-- Touch controls (coarse pointers only) -->
+  <div id="touch">
+    <div id="touch-left">
+      <button class="tbtn" data-key="KeyA" aria-label="Steer left">◀</button>
+      <button class="tbtn" data-key="KeyD" aria-label="Steer right">▶</button>
+    </div>
+    <div id="touch-right">
+      <button class="tbtn small drs" data-key="Space" aria-label="DRS">DRS</button>
+      <button class="tbtn brake" data-key="KeyS" aria-label="Brake">BRK</button>
+      <button class="tbtn gas" data-key="KeyW" aria-label="Throttle">GAS</button>
+    </div>
+    <div id="touch-meta">
+      <button class="tbtn tiny" data-key="KeyC" aria-label="Camera">CAM</button>
+      <button class="tbtn tiny" data-key="KeyR" aria-label="Reset">RST</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Chequered flag · podium modal ══ -->
+<div id="finish-modal" role="dialog" aria-modal="true" aria-labelledby="finish-title">
+  <div id="finish-card" class="panel">
+    <div id="confetti" aria-hidden="true"></div>
+    <div id="finish-kicker">CHEQUERED FLAG · MONACO GP</div>
+    <h1 id="finish-title">VICTORY</h1>
+    <div id="finish-sub">CIRCUIT DE MONACO · 3 LAPS</div>
+    <div id="podium"></div>
+    <div id="finish-rows"></div>
+    <button id="race-again">RACE AGAIN <span class="key-cap">R</span></button>
+  </div>
+</div>
+
+<!-- ══ Three.js via ES Module CDN ══ -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
