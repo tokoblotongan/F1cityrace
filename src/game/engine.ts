@@ -315,8 +315,15 @@ function createMediterraneanClouds(scene: THREE.Scene, sunDir: THREE.Vector3) {
   return { clouds, cloudMat };
 }
 
+export interface RaceFinishResult {
+  playerPosition: number;
+  bestLapTime: number | null;
+  totalRaceTime: number;
+}
+
 export interface EngineCallbacks {
   onWebGLError?: (msg: string) => void;
+  onRaceFinish?: (result: RaceFinishResult | null) => void;
 }
 
 export function startMonacoEngine(
@@ -447,6 +454,16 @@ export function startMonacoEngine(
   }
 
   const onKeyDown = (e: KeyboardEvent) => {
+    const activeTag = document.activeElement?.tagName;
+    const targetTag = (e.target as HTMLElement | null)?.tagName;
+    if (
+      activeTag === 'INPUT' ||
+      activeTag === 'TEXTAREA' ||
+      targetTag === 'INPUT' ||
+      targetTag === 'TEXTAREA'
+    ) {
+      return;
+    }
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
       e.preventDefault();
     }
@@ -484,11 +501,11 @@ export function startMonacoEngine(
     resetQueued = false;
   }
 
-  // --- Pooled 60 FPS Damage Smoke & Floor Sparks ---
+  // --- Pooled 60 FPS Damage Smoke & Contact/Floor Sparks ---
   const SMOKE_COUNT = 30;
-  const SPARK_COUNT = 22;
+  const SPARK_COUNT = 56;
   const smokeGeo = new THREE.IcosahedronGeometry(0.24, 1);
-  const sparkGeo = new THREE.BoxGeometry(0.055, 0.055, 0.32);
+  const sparkGeo = new THREE.BoxGeometry(0.052, 0.052, 0.36);
 
   interface SmokePuff {
     mesh: THREE.Mesh;
@@ -502,6 +519,7 @@ export function startMonacoEngine(
   interface SparkBit {
     mesh: THREE.Mesh;
     vel: THREE.Vector3;
+    groundY: number;
     age: number;
     life: number;
     active: boolean;
@@ -530,9 +548,9 @@ export function startMonacoEngine(
   }
 
   const sparkMat = new THREE.MeshBasicMaterial({
-    color: 0xffa62b,
+    color: 0xffb833,
     transparent: true,
-    opacity: 0.95,
+    opacity: 0.96,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   });
@@ -544,6 +562,7 @@ export function startMonacoEngine(
     sparkPool.push({
       mesh,
       vel: new THREE.Vector3(),
+      groundY: 0,
       age: 0,
       life: 0.35,
       active: false,
@@ -554,13 +573,49 @@ export function startMonacoEngine(
   let sparkNext = 0;
   let smokeAcc = 0;
   let sparkAcc = 0;
+  let contactSparkCooldown = 0;
   const _pTmp = new THREE.Vector3();
   const _pFwd = new THREE.Vector3();
   const _pRight = new THREE.Vector3();
 
+  function spawnContactSparks(
+    x: number,
+    y: number,
+    z: number,
+    tx: number,
+    tz: number,
+    speedScale: number,
+    count: number
+  ) {
+    const baseSpd = Math.min(24, Math.max(6, speedScale));
+    for (let i = 0; i < count; i++) {
+      const sp = sparkPool[sparkNext];
+      sparkNext = (sparkNext + 1) % SPARK_COUNT;
+      const spread = (Math.random() - 0.5) * 7.5;
+      const along = (Math.random() < 0.5 ? -1 : 1) * (0.45 + Math.random() * 0.75) * baseSpd * 0.65;
+      sp.mesh.position.set(
+        x + (Math.random() - 0.5) * 0.24,
+        y + 0.28 + Math.random() * 0.25,
+        z + (Math.random() - 0.5) * 0.24
+      );
+      sp.vel.set(
+        tx * along + (Math.random() - 0.5) * spread,
+        1.8 + Math.random() * 3.8,
+        tz * along + (Math.random() - 0.5) * spread
+      );
+      sp.mesh.rotation.set(0, Math.atan2(sp.vel.x, sp.vel.z), 0);
+      sp.groundY = y;
+      sp.age = 0;
+      sp.life = 0.18 + Math.random() * 0.22;
+      sp.active = true;
+      sp.mesh.visible = true;
+    }
+  }
+
   function resetParticles() {
     smokeAcc = 0;
     sparkAcc = 0;
+    contactSparkCooldown = 0;
     for (const s of smokePool) {
       s.active = false;
       s.mesh.visible = false;
@@ -617,6 +672,7 @@ export function startMonacoEngine(
             1.2 + Math.random() * 2.2,
             -_pFwd.z * (6 + speedMs * 0.35) + _pRight.z * (Math.random() - 0.5) * 4
           );
+          sp.groundY = playerCar.position.y;
           sp.age = 0;
           sp.life = 0.22 + Math.random() * 0.18;
           sp.active = true;
@@ -649,8 +705,8 @@ export function startMonacoEngine(
       }
       sp.vel.y -= 12 * dt;
       sp.mesh.position.addScaledVector(sp.vel, dt);
-      if (sp.mesh.position.y < playerCar.position.y + 0.05) {
-        sp.mesh.position.y = playerCar.position.y + 0.05;
+      if (sp.mesh.position.y < sp.groundY + 0.05) {
+        sp.mesh.position.y = sp.groundY + 0.05;
         sp.vel.y = Math.abs(sp.vel.y) * 0.45;
       }
     }
@@ -677,8 +733,9 @@ export function startMonacoEngine(
           ? 0.032
           : 0.014
         : 0;
+    const scrapeShake = (state.scrapeIntensity || 0) * 0.048;
     const shake =
-      state.hitIntensity * 0.35 + speedFrac * 0.02 + (state.onCurb ? 0.035 : 0) + dmgShake;
+      state.hitIntensity * 0.35 + speedFrac * 0.02 + (state.onCurb ? 0.035 : 0) + dmgShake + scrapeShake;
     const sx = Math.sin(elapsed * 47.3) * shake;
     const sy = Math.cos(elapsed * 39.1) * shake * 0.7;
 
@@ -743,6 +800,7 @@ export function startMonacoEngine(
     isSliding: false,
     lateralG: 0,
     hitIntensity: 0,
+    scrapeIntensity: 0,
     onCurb: false,
     u: 0,
     throttle: 0,
@@ -766,6 +824,7 @@ export function startMonacoEngine(
 
   function fullRestartRace() {
     stopVictoryMusic();
+    callbacks.onRaceFinish?.(null);
     restartRace(allCars, trackData);
     resetCarHealth(playerCar);
     resetParticles();
@@ -836,6 +895,7 @@ export function startMonacoEngine(
     while (accumulator >= STEP && steps < MAX_SUBSTEPS) {
       wallHitAudioCooldown = Math.max(0, wallHitAudioCooldown - STEP);
       aiHitAudioCooldown = Math.max(0, aiHitAudioCooldown - STEP);
+      contactSparkCooldown = Math.max(0, contactSparkCooldown - STEP);
 
       const hitBeforeWall = playerP.hit;
       const speedBeforeWall = playerP.speed;
@@ -848,38 +908,45 @@ export function startMonacoEngine(
 
       raceState = updateAIRacers(aiList, allCars, trackData, STEP);
 
-      // Car-to-AI collision detection, dynamic impact audio & proportional damage
-      if (raceState?.phase === 'RACING' && playerP.health > 0) {
-        const pfX = -Math.sin(playerP.yaw);
-        const pfZ = -Math.cos(playerP.yaw);
-        const prX = Math.cos(playerP.yaw);
-        const prZ = -Math.sin(playerP.yaw);
-        for (const ai of aiList) {
-          const dx = ai.position.x - playerCar.position.x;
-          const dz = ai.position.z - playerCar.position.z;
-          const distSq = dx * dx + dz * dz;
-          if (distSq > 16.0 || distSq < 1e-6) continue;
-          const along = Math.abs(dx * pfX + dz * pfZ);
-          const across = Math.abs(dx * prX + dz * prZ);
-          if (along < 4.15 && across < 1.85) {
-            const aiP = ai.userData.physics;
-            const afX = -Math.sin(aiP.yaw);
-            const afZ = -Math.cos(aiP.yaw);
-            const relVx = pfX * playerP.speed - afX * aiP.speed;
-            const relVz = pfZ * playerP.speed - afZ * aiP.speed;
-            const relSpeed = Math.hypot(relVx, relVz);
-            const speedDiff = Math.abs(playerP.speed - aiP.speed);
-            if (aiHitAudioCooldown <= 0 && (relSpeed > 2.8 || speedDiff > 2.8)) {
-              const carIntensity = Math.min(1, Math.max(0.22, Math.max(relSpeed, speedDiff) / 42));
+      // Process solid OBB car-to-car collision events (audio, damage, micro-shake, sparks)
+      if (raceState?.phase === 'RACING' && Array.isArray(raceState.collisionEvents)) {
+        for (const ev of raceState.collisionEvents) {
+          if (ev.isPlayerInvolved && playerP.health > 0) {
+            if (aiHitAudioCooldown <= 0 && ev.closingSpeed > 2.6) {
+              const carIntensity = Math.min(1, Math.max(0.22, ev.closingSpeed / 36));
               playCollisionSound(carIntensity, false);
-              aiHitAudioCooldown = 0.28;
+              aiHitAudioCooldown = 0.24;
             }
-            const impactSpeed = Math.max(relSpeed, speedDiff + 6);
+            if (ev.closingSpeed > 4.0) {
+              playerP.hit = Math.max(playerP.hit, Math.min(0.85, ev.closingSpeed / 34));
+            }
+            const impactSpeed = Math.max(ev.closingSpeed + 3, ev.closingSpeed * 1.15);
             if (impactSpeed > 15 && playerP.damageCooldown <= 0) {
               applyCarDamage(playerCar, impactSpeed);
-              playerP.speed *= 0.86;
-              aiP.speed *= 0.9;
             }
+          }
+
+          if (ev.closingSpeed > 4.5) {
+            spawnContactSparks(
+              ev.contactX,
+              ev.contactY,
+              ev.contactZ,
+              ev.tangentX,
+              ev.tangentZ,
+              Math.max(ev.closingSpeed, ev.tangentSpeed, 10),
+              ev.isPlayerInvolved ? 7 : 4
+            );
+          } else if (ev.isScrape && contactSparkCooldown <= 0) {
+            spawnContactSparks(
+              ev.contactX,
+              ev.contactY,
+              ev.contactZ,
+              ev.tangentX,
+              ev.tangentZ,
+              Math.max(ev.tangentSpeed, 9),
+              ev.isPlayerInvolved ? 3 : 2
+            );
+            contactSparkCooldown = 0.032;
           }
         }
       }
@@ -962,10 +1029,12 @@ export function startMonacoEngine(
       }
     }
 
-    // Sync latest health/repair state into carState for HUD/Audio
+    // Sync latest health/repair/scrape/speed state into carState for HUD/Audio/Camera
+    carState.speedKmh = playerP.speed * 3.6;
     carState.health = playerP.health;
     carState.isDead = playerP.health <= 0;
     carState.hitIntensity = playerP.hit;
+    carState.scrapeIntensity = playerP.scrapeLevel || 0;
     carState.repairFlash = playerP.repairFlash;
     updateDamageParticles(dt, playerP.health, playerP.speed);
 
@@ -1026,7 +1095,18 @@ export function startMonacoEngine(
 
     const isFinishedNow = !!(raceState && raceState.isFinished);
     if (!prevFinished && isFinishedNow && playerP.health > 0) {
-      playFinishSound(raceState.playerPosition || 1);
+      const playerPos = raceState.playerPosition || 1;
+      playFinishSound(playerPos);
+      const playerEntry = Array.isArray(raceState.standings)
+        ? raceState.standings.find((e: any) => e.isPlayer)
+        : null;
+      callbacks.onRaceFinish?.({
+        playerPosition: playerPos,
+        bestLapTime: raceState.bestLapTime ?? playerEntry?.bestLapTime ?? null,
+        totalRaceTime: playerEntry?.finishTime ?? raceState.raceTime ?? 0,
+      });
+    } else if (prevFinished && !isFinishedNow) {
+      callbacks.onRaceFinish?.(null);
     }
     prevFinished = isFinishedNow;
 

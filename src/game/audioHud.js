@@ -210,7 +210,7 @@ function mmDraw(raceState, now) {
 // 2 · WEB AUDIO — V6 turbo-hybrid engine, screech, impacts, UI tones
 // ═══════════════════════════════════════════════════════════════════════════
 let ctx = null, master = null, noiseBuf = null, pinkNoiseBuf = null, audioReady = false, muted = false;
-let engine = null, screech = null, curb = null, shiftCutUntil = 0;
+let engine = null, screech = null, curb = null, scrape = null, shiftCutUntil = 0;
 let latestCarState = null;
 let prevGear = 1, prevDrs = false;
 
@@ -264,6 +264,18 @@ function buildLoops() {
   const g2 = ctx.createGain(); g2.gain.value = 0;
   src2.connect(lp); lp.connect(g2); g2.connect(master); src2.start();
   curb = { g: g2 };
+
+  const scrapeSrc = ctx.createBufferSource(); scrapeSrc.buffer = noiseBuf; scrapeSrc.loop = true;
+  const scrapeBp = ctx.createBiquadFilter(); scrapeBp.type = 'bandpass'; scrapeBp.frequency.value = 1850; scrapeBp.Q.value = 1.5;
+  const crunchSrc = ctx.createBufferSource(); crunchSrc.buffer = pinkNoiseBuf || noiseBuf; crunchSrc.loop = true;
+  const crunchBp = ctx.createBiquadFilter(); crunchBp.type = 'bandpass'; crunchBp.frequency.value = 420; crunchBp.Q.value = 1.25;
+  const crunchMix = ctx.createGain(); crunchMix.gain.value = 0.7;
+  const scrapeGain = ctx.createGain(); scrapeGain.gain.value = 0;
+  scrapeSrc.connect(scrapeBp); scrapeBp.connect(scrapeGain);
+  crunchSrc.connect(crunchBp); crunchBp.connect(crunchMix); crunchMix.connect(scrapeGain);
+  scrapeGain.connect(master);
+  scrapeSrc.start(); crunchSrc.start();
+  scrape = { bp: scrapeBp, crunchBp, g: scrapeGain };
 }
 export function initAudio() {
   if (ctx) { if (ctx.state === 'suspended') ctx.resume().catch(() => {}); return true; }
@@ -492,6 +504,7 @@ export function playGameOverSound() {
   }
   if (screech) screech.g.gain.setTargetAtTime(0, t, 0.02);
   if (curb) curb.g.gain.setTargetAtTime(0, t, 0.02);
+  if (scrape) scrape.g.gain.setTargetAtTime(0, t, 0.02);
 
   // Dramatic engine power-down spin-down
   const spinFilter = ctx.createBiquadFilter();
@@ -760,6 +773,13 @@ export function updateAudio(carState) {
   screech.g.gain.setTargetAtTime(slide * 0.16 * (0.4 + speedFrac), t, 0.05);
   screech.bp.frequency.setTargetAtTime(1100 + speedFrac * 900, t, 0.1);
   curb.g.gain.setTargetAtTime(!isDead && carState.onCurb && carState.speedKmh > 20 ? 0.07 : 0, t, 0.04);
+
+  const scrapeLvl = !isDead ? clamp(carState.scrapeIntensity || 0, 0, 1) : 0;
+  if (scrape) {
+    scrape.g.gain.setTargetAtTime(scrapeLvl > 0.01 ? scrapeLvl * 0.26 : 0, t, scrapeLvl > 0.01 ? 0.025 : 0.05);
+    scrape.bp.frequency.setTargetAtTime(1450 + speedFrac * 1100 + scrapeLvl * 550, t, 0.06);
+    scrape.crunchBp.frequency.setTargetAtTime(340 + scrapeLvl * 260, t, 0.06);
+  }
 
   if (carState.drsActive && !prevDrs) burst({ type: 'bandpass', freq: 600, q: 1.4, gain: 0.08, dur: 0.28, sweepTo: 3000 });
   prevDrs = !!carState.drsActive;

@@ -412,7 +412,7 @@ function makeDistanceBoardTexture(distText) {
   return tex;
 }
 
-function makeCurtainWallTextures(theme = 'emerald') {
+function makeCurtainWallTextures(theme = 'silverSky') {
   const W = 1024;
   const H = 1024;
   const alb = document.createElement('canvas');
@@ -428,37 +428,66 @@ function makeCurtainWallTextures(theme = 'emerald') {
   const eg = ems.getContext('2d');
 
   const palettes = {
-    emerald: {
-      top: '#123846',
-      mid: '#1f5a69',
-      bot: '#2b7784',
-      mullion: '#cfd9e3',
-      spandrel: '#1a2c38',
-      glowA: 'rgba(130, 240, 255, 0.34)',
-      glowB: 'rgba(255, 232, 184, 0.28)',
+    silverSky: {
+      top: '#4e83b0',
+      mid: '#76add6',
+      bot: '#a8d3f0',
+      mullion: '#eef3f8',
+      spandrel: '#cfdbe6',
+      spandrelTrim: '#9cb2c7',
+      glowA: 'rgba(210, 244, 255, 0.36)',
+      glowB: 'rgba(255, 245, 220, 0.30)',
+      emsA: 'rgb(115, 195, 225)',
+      emsB: 'rgb(175, 155, 115)',
+      diagAlpha: 0.16,
+      isMasonry: false,
     },
-    silver: {
-      top: '#243c54',
-      mid: '#3b6484',
-      bot: '#5c8aa8',
-      mullion: '#dce4ee',
-      spandrel: '#24303d',
-      glowA: 'rgba(175, 235, 255, 0.34)',
-      glowB: 'rgba(255, 244, 214, 0.28)',
+    champagneIvory: {
+      top: '#9c7f52',
+      mid: '#bca06e',
+      bot: '#d6be8e',
+      mullion: '#f4ecdc',
+      spandrel: '#eee4cf',
+      spandrelTrim: '#cbb894',
+      glowA: 'rgba(255, 236, 185, 0.38)',
+      glowB: 'rgba(220, 245, 255, 0.24)',
+      emsA: 'rgb(190, 156, 92)',
+      emsB: 'rgb(120, 180, 200)',
+      diagAlpha: 0.14,
+      isMasonry: true,
     },
-    champagne: {
-      top: '#3b3428',
-      mid: '#64563f',
-      bot: '#8c7856',
-      mullion: '#d6c39a',
-      spandrel: '#2b261f',
-      glowA: 'rgba(255, 224, 152, 0.38)',
-      glowB: 'rgba(165, 240, 255, 0.22)',
+    pearlTeal: {
+      top: '#3e979c',
+      mid: '#64bdbd',
+      bot: '#95dada',
+      mullion: '#e7edf2',
+      spandrel: '#d6dde5',
+      spandrelTrim: '#aebbc8',
+      glowA: 'rgba(190, 255, 248, 0.36)',
+      glowB: 'rgba(255, 246, 222, 0.26)',
+      emsA: 'rgb(108, 208, 202)',
+      emsB: 'rgb(176, 158, 120)',
+      diagAlpha: 0.15,
+      isMasonry: false,
+    },
+    coralMarina: {
+      top: '#346380',
+      mid: '#4d84a4',
+      bot: '#78acc8',
+      mullion: '#f8f3eb',
+      spandrel: '#f4ede2',
+      spandrelTrim: '#d96b4e',
+      glowA: 'rgba(255, 234, 200, 0.36)',
+      glowB: 'rgba(195, 242, 255, 0.28)',
+      emsA: 'rgb(195, 148, 102)',
+      emsB: 'rgb(112, 186, 215)',
+      diagAlpha: 0.08,
+      isMasonry: true,
     },
   };
-  const pal = palettes[theme] || palettes.emerald;
+  const pal = palettes[theme] || palettes.silverSky;
 
-  // Deep tinted curtain-wall base gradient
+  // Bright sunlit architectural glass base gradient
   const baseGrad = ag.createLinearGradient(0, 0, W * 0.4, H);
   baseGrad.addColorStop(0, pal.top);
   baseGrad.addColorStop(0.55, pal.mid);
@@ -466,8 +495,8 @@ function makeCurtainWallTextures(theme = 'emerald') {
   ag.fillStyle = baseGrad;
   ag.fillRect(0, 0, W, H);
 
-  // Smooth glass low roughness (~0.15 -> rgb(38,38,38))
-  rg.fillStyle = 'rgb(38, 38, 38)';
+  // Smooth glass multiplier (~0.72 -> multiplied by material roughness 0.28-0.34 => ~0.20-0.24)
+  rg.fillStyle = 'rgb(184, 184, 184)';
   rg.fillRect(0, 0, W, H);
 
   eg.fillStyle = '#000000';
@@ -478,73 +507,79 @@ function makeCurtainWallTextures(theme = 'emerald') {
   const colW = W / cols;
   const rowH = H / rows;
 
-  // Individual glass curtain-wall bays with subtle atrium depth & sky glint
+  // Individual curtain-wall bays with sky reflections & subtle interior depth
   for (let r = 0; r < rows; r++) {
     const ry = r * rowH;
     for (let c = 0; c < cols; c++) {
       const cx = c * colW;
       const hash = ((r * 31 + c * 17) % 19) / 19;
 
-      // Subtle panel-to-panel tint variation (architectural glass cold-warping realism)
       const paneGrad = ag.createLinearGradient(cx, ry, cx + colW, ry + rowH);
-      paneGrad.addColorStop(0, `rgba(255, 255, 255, ${0.04 + hash * 0.08})`);
-      paneGrad.addColorStop(0.5, 'rgba(200, 240, 255, 0.02)');
-      paneGrad.addColorStop(1, `rgba(8, 18, 28, ${0.12 + (1 - hash) * 0.1})`);
+      paneGrad.addColorStop(0, `rgba(255, 255, 255, ${0.08 + hash * 0.10})`);
+      paneGrad.addColorStop(0.5, 'rgba(225, 246, 255, 0.04)');
+      paneGrad.addColorStop(1, `rgba(20, 42, 64, ${0.06 + (1 - hash) * 0.08})`);
       ag.fillStyle = paneGrad;
-      ag.fillRect(cx + 3, ry + 14, colW - 6, rowH - 18);
+      ag.fillRect(cx + 3, ry + 18, colW - 6, rowH - 22);
 
-      // Diagonal Mediterranean sky sheen on alternating bays
+      // Diagonal Mediterranean sky glint on alternating bays
       if ((r + c) % 3 === 0) {
-        ag.fillStyle = 'rgba(210, 242, 255, 0.12)';
+        ag.fillStyle = 'rgba(235, 248, 255, 0.20)';
         ag.beginPath();
-        ag.moveTo(cx + 4, ry + 15);
-        ag.lineTo(cx + colW * 0.65, ry + 15);
-        ag.lineTo(cx + 4, ry + rowH * 0.68);
+        ag.moveTo(cx + 4, ry + 18);
+        ag.lineTo(cx + colW * 0.68, ry + 18);
+        ag.lineTo(cx + 4, ry + rowH * 0.66);
         ag.closePath();
         ag.fill();
       }
 
-      // Interior office / double-height atrium depth lighting
+      // Interior office / double-height atrium lighting
       if ((r * 7 + c * 13) % 5 === 0) {
         const isWarm = (r + c) % 2 === 0;
-        const glow = isWarm ? pal.glowB : pal.glowA;
-        ag.fillStyle = glow;
-        ag.fillRect(cx + 8, ry + rowH * 0.32, colW - 16, rowH * 0.48);
-        eg.fillStyle = isWarm ? 'rgb(165, 138, 86)' : 'rgb(88, 172, 195)';
-        eg.fillRect(cx + 10, ry + rowH * 0.36, colW - 20, rowH * 0.40);
+        ag.fillStyle = isWarm ? pal.glowB : pal.glowA;
+        ag.fillRect(cx + 8, ry + rowH * 0.34, colW - 16, rowH * 0.45);
+        eg.fillStyle = isWarm ? pal.emsB : pal.emsA;
+        eg.fillRect(cx + 10, ry + rowH * 0.38, colW - 20, rowH * 0.38);
       }
     }
 
-    // Horizontal aluminum spandrel band & brushed floor line (roughness ~0.5 -> rgb(128))
+    // Architectural horizontal spandrel bands (ivory limestone / coral-terracotta / pearl-aluminum)
+    const bandH = pal.isMasonry ? 28 : 18;
     ag.fillStyle = pal.spandrel;
-    ag.fillRect(0, ry, W, 14);
-    ag.fillStyle = pal.mullion;
-    ag.fillRect(0, ry + 12, W, 4);
-    rg.fillStyle = 'rgb(128, 128, 128)';
-    rg.fillRect(0, ry, W, 16);
+    ag.fillRect(0, ry, W, bandH);
+    ag.fillStyle = pal.spandrelTrim;
+    ag.fillRect(0, ry + bandH - 6, W, 6);
+    rg.fillStyle = 'rgb(255, 255, 255)';
+    rg.fillRect(0, ry, W, bandH);
   }
 
-  // Ultra-thin brushed aluminum vertical mullions
+  // Vertical mullions / limestone-terracotta piers
+  const mullW = pal.isMasonry ? 10 : 5;
   for (let c = 0; c <= cols; c++) {
     const x = c * colW;
     ag.fillStyle = pal.mullion;
-    ag.fillRect(x - 2, 0, 4, H);
-    rg.fillStyle = 'rgb(128, 128, 128)';
-    rg.fillRect(x - 2, 0, 4, H);
+    ag.fillRect(x - mullW * 0.5, 0, mullW, H);
+    if (pal.isMasonry && c % 2 === 0) {
+      ag.fillStyle = pal.spandrelTrim;
+      ag.fillRect(x - 3, 0, 6, H);
+    }
+    rg.fillStyle = 'rgb(255, 255, 255)';
+    rg.fillRect(x - mullW * 0.5, 0, mullW, H);
   }
 
-  // Subtle architectural diagrid shadow accent across curtain wall
-  ag.strokeStyle = 'rgba(230, 240, 250, 0.14)';
-  ag.lineWidth = 4;
-  for (let offset = -W; offset <= W * 2; offset += W * 0.5) {
-    ag.beginPath();
-    ag.moveTo(offset, 0);
-    ag.lineTo(offset + W, H);
-    ag.stroke();
-    ag.beginPath();
-    ag.moveTo(offset + W, 0);
-    ag.lineTo(offset, H);
-    ag.stroke();
+  // Subtle architectural diagrid accent
+  if (pal.diagAlpha > 0) {
+    ag.strokeStyle = `rgba(245, 250, 255, ${pal.diagAlpha})`;
+    ag.lineWidth = 4;
+    for (let offset = -W; offset <= W * 2; offset += W * 0.5) {
+      ag.beginPath();
+      ag.moveTo(offset, 0);
+      ag.lineTo(offset + W, H);
+      ag.stroke();
+      ag.beginPath();
+      ag.moveTo(offset + W, 0);
+      ag.lineTo(offset, H);
+      ag.stroke();
+    }
   }
 
   const setup = (canvas, isColor) => {
@@ -578,49 +613,48 @@ function makeZahaCompositeTextures() {
   ems.width = W; ems.height = H;
   const eg = ems.getContext('2d');
 
-  // Sleek pearl-white fluid composite cladding
+  // Sleek pearlescent white composite cladding
   const base = ag.createLinearGradient(0, 0, 0, H);
-  base.addColorStop(0, '#f4f6f9');
-  base.addColorStop(0.5, '#e8edf3');
-  base.addColorStop(1, '#dde4ec');
+  base.addColorStop(0, '#f7f9fc');
+  base.addColorStop(0.5, '#eef2f7');
+  base.addColorStop(1, '#e3e9f1');
   ag.fillStyle = base;
   ag.fillRect(0, 0, W, H);
-  rg.fillStyle = 'rgb(76, 76, 76)';
+  rg.fillStyle = 'rgb(245, 245, 245)';
   rg.fillRect(0, 0, W, H);
   eg.fillStyle = '#000000';
   eg.fillRect(0, 0, W, H);
 
-  // Seamless composite panel joints + wrap-around dark glass ribbon windows
+  // Seamless composite panel joints + wrap-around dark tinted horizontal ribbon windows
   const ribbons = 4;
   const bandH = H / ribbons;
   for (let i = 0; i < ribbons; i++) {
     const y = i * bandH;
-    // Recessed composite shadow seam
-    ag.fillStyle = '#bfc9d4';
+    ag.fillStyle = '#cbd5e1';
     ag.fillRect(0, y + 8, W, 4);
 
     // Continuous sweeping ribbon glass
     const winY = y + bandH * 0.34;
     const winH = bandH * 0.38;
     const wGrad = ag.createLinearGradient(0, winY, 0, winY + winH);
-    wGrad.addColorStop(0, '#102436');
-    wGrad.addColorStop(0.5, '#1d4460');
-    wGrad.addColorStop(1, '#0c1a27');
+    wGrad.addColorStop(0, '#132a3e');
+    wGrad.addColorStop(0.5, '#214c6b');
+    wGrad.addColorStop(1, '#0f2030');
     ag.fillStyle = wGrad;
     ag.fillRect(0, winY, W, winH);
 
-    // Thin dark mullions inside ribbon glazing
-    ag.fillStyle = '#7c8b99';
+    // Thin silver-slate mullions inside ribbon glazing
+    ag.fillStyle = '#8fa0b2';
     for (let mx = 0; mx < W; mx += 128) {
       ag.fillRect(mx, winY, 3, winH);
     }
 
-    // Crisp low roughness on ribbon windows (~0.14)
-    rg.fillStyle = 'rgb(36, 36, 36)';
+    // Crisp low roughness multiplier on ribbon windows
+    rg.fillStyle = 'rgb(172, 172, 172)';
     rg.fillRect(0, winY, W, winH);
 
-    // Warm atrium glow strip along ribbon ceiling
-    eg.fillStyle = 'rgba(130, 225, 255, 0.45)';
+    // Subtle cyan LED cove glow along ribbon ceiling
+    eg.fillStyle = 'rgba(130, 232, 255, 0.55)';
     eg.fillRect(0, winY + 3, W, 8);
   }
 
@@ -2881,51 +2915,54 @@ export function buildMonacoTrack(scene) {
     return { idx: best, distSq: bd };
   };
 
-  // --- Shared Futuristic Architectural Materials (Shenzhen / Abu Dhabi Glass & Composite) ---
-  const emeraldTex = makeCurtainWallTextures('emerald');
-  const silverTex = makeCurtainWallTextures('silver');
-  const champagneTex = makeCurtainWallTextures('champagne');
-  const zahaTex = makeZahaCompositeTextures();
+  // --- Shared Futuristic Architectural Materials (5 Bright, Contrasting Luxury Palettes) ---
+  const whiteRibbonTex = makeZahaCompositeTextures();
+  const silverSkyTex = makeCurtainWallTextures('silverSky');
+  const champagneIvoryTex = makeCurtainWallTextures('champagneIvory');
+  const pearlTealTex = makeCurtainWallTextures('pearlTeal');
+  const coralMarinaTex = makeCurtainWallTextures('coralMarina');
   const helipadTex = makeHelipadTexture();
 
-  const makeGlassMat = (tex, tintHex = 0xffffff) =>
+  const makeTowerMat = (tex, roughness, metalness, clearcoat = 0.65, envInt = 0.85, emsHex = 0xffffff, emsInt = 0.36) =>
     new THREE.MeshPhysicalMaterial({
-      color: tintHex,
+      color: 0xffffff,
       map: tex.map,
       roughnessMap: tex.roughnessMap,
-      emissive: new THREE.Color(0xffffff),
+      emissive: new THREE.Color(emsHex),
       emissiveMap: tex.emissiveMap,
-      emissiveIntensity: 0.42,
-      roughness: 1.0, // Driven by roughnessMap (0.15 glass / 0.50 aluminum mullions)
-      metalness: 0.75,
-      clearcoat: 0.8,
-      clearcoatRoughness: 0.08,
-      envMapIntensity: 1.15,
+      emissiveIntensity: emsInt,
+      roughness,
+      metalness,
+      clearcoat,
+      clearcoatRoughness: 0.12,
+      envMapIntensity: envInt,
       side: THREE.FrontSide,
     });
 
-  const glassEmeraldMat = makeGlassMat(emeraldTex);
-  const glassSilverMat = makeGlassMat(silverTex);
-  const glassChampagneMat = makeGlassMat(champagneTex);
+  // 0: Sleek Pearlescent White & Ribbon Glass
+  const whiteRibbonMat = makeTowerMat(whiteRibbonTex, 0.32, 0.42, 0.7, 0.78, 0x9eeeff, 0.38);
+  // 1: Bright Silver-Sky & Ice-Blue Curtain Wall
+  const silverSkyMat = makeTowerMat(silverSkyTex, 0.24, 0.60, 0.8, 0.95);
+  // 2: Warm Champagne Gold & Ivory Limestone
+  const champagneIvoryMat = makeTowerMat(champagneIvoryTex, 0.30, 0.50, 0.65, 0.86);
+  // 3: Pearl Gray & Frosted Teal Glass
+  const pearlTealMat = makeTowerMat(pearlTealTex, 0.28, 0.46, 0.72, 0.88);
+  // 4: Modern Coral-Terracotta & White Marina Lofts
+  const coralMarinaMat = makeTowerMat(coralMarinaTex, 0.34, 0.40, 0.5, 0.78);
 
-  const zahaMat = new THREE.MeshPhysicalMaterial({
-    color: 0xffffff,
-    map: zahaTex.map,
-    roughnessMap: zahaTex.roughnessMap,
-    emissive: new THREE.Color(0x9eeeff),
-    emissiveMap: zahaTex.emissiveMap,
-    emissiveIntensity: 0.45,
-    roughness: 0.88,
-    metalness: 0.35,
-    clearcoat: 0.85,
-    clearcoatRoughness: 0.1,
-    side: THREE.FrontSide,
-  });
+  const towerPaletteMats = [
+    whiteRibbonMat,
+    silverSkyMat,
+    champagneIvoryMat,
+    pearlTealMat,
+    coralMarinaMat,
+  ];
+  const makePaletteBuckets = () => [[], [], [], [], []];
 
   const frameMetalMat = new THREE.MeshStandardMaterial({
-    color: 0xd0d8e2,
+    color: 0xe2e8f0,
     roughness: 0.28,
-    metalness: 0.88,
+    metalness: 0.64,
     side: THREE.FrontSide,
   });
 
@@ -2949,30 +2986,39 @@ export function buildMonacoTrack(scene) {
     metalness: 0.2,
   });
 
-  // --- Futuristic Shenzhen & Abu Dhabi City Skyline (4 Architectural Archetypes) ---
+  // --- Futuristic Shenzhen, Abu Dhabi & Mediterranean Skyline (4 Archetypes x 5 Contrasting Palettes) ---
   // Archetype A: Tapered Diagrid Supertalls (Etihad / Ping An)
-  const taperedLowE = [];
-  const taperedHighE = [];
-  const taperedHighC = [];
+  const taperedLowBuckets = makePaletteBuckets();
+  const taperedHighBuckets = makePaletteBuckets();
   const taperedFinsSpecs = [];
   // Archetype B: Twisted Helix & Curved Sail Towers (Cayan / Burj Al Arab / Shenzhen Bay)
-  const helixS = [];
-  const helixE = [];
-  const sailC = [];
-  const sailS = [];
+  const helixBuckets = makePaletteBuckets();
+  const sailBuckets = makePaletteBuckets();
   // Archetype C: Cantilevered Sky-Bridge & Luxury Retail Podium Complexes
-  const podiumSpecs = [];
-  const twinTowerE = [];
-  const twinTowerS = [];
-  const skybridgeSpecs = [];
-  // Archetype D: Zaha Hadid Fluid Organic Pavilions (Harbor Promenade & Plazas)
-  const pavilionSpecs = [];
+  const podiumBuckets = makePaletteBuckets();
+  const twinTowerBuckets = makePaletteBuckets();
+  const skybridgeBuckets = makePaletteBuckets();
+  // Archetype D: Zaha Hadid Fluid Organic Pavilions & Marina Lofts
+  const pavilionBuckets = makePaletteBuckets();
   // Architectural LED strips, crown spires & helipads
   const ledCyanSpecs = [];
   const ledWarmSpecs = [];
   const helipadSpecs = [];
 
   const BUILDING_GROUND_Y = -1.0;
+  let lastLeftPal = -1;
+  let lastRightPal = -1;
+  let lastGlobalPal = -1;
+  const pickContrastingPalette = (sideKey, candidates, seed) => {
+    const prevSide = sideKey < 0 ? lastLeftPal : lastRightPal;
+    const filtered = candidates.filter((p) => p !== prevSide && p !== lastGlobalPal);
+    const pool = filtered.length ? filtered : candidates.filter((p) => p !== prevSide);
+    const chosen = pool[(seed >>> 0) % pool.length];
+    if (sideKey < 0) lastLeftPal = chosen;
+    else lastRightPal = chosen;
+    lastGlobalPal = chosen;
+    return chosen;
+  };
 
   for (let i = 0; i < 168; i++) {
     const idx = Math.floor((i / 168) * SAMPLE_COUNT);
@@ -3005,11 +3051,12 @@ export function buildMonacoTrack(scene) {
     const trackY = Math.max(0, pos[near.idx].y);
 
     if (isPavilion) {
-      // Archetype D: Zaha Hadid-style fluid organic pavilion grounded to y = -1.0
+      // Archetype D: Zaha Hadid-style fluid organic pavilion / Marina Lofts grounded to y = -1.0
       const pavH = trackY + 9 + (i % 4) * 2.5 - BUILDING_GROUND_Y;
       const pw = w * 1.28;
       const pd = d * 1.18;
-      pavilionSpecs.push({ x: bx, y: BUILDING_GROUND_Y, z: bz, w: pw, h: pavH, d: pd, yaw: roadYaw });
+      const palIdx = pickContrastingPalette(side, nearHarbor ? [0, 4, 3] : [0, 3, 4], i * 3 + 1);
+      pavilionBuckets[palIdx].push({ x: bx, y: BUILDING_GROUND_Y, z: bz, w: pw, h: pavH, d: pd, yaw: roadYaw });
       // Subtle glowing cyan cove LED eave ring near roofline
       ledCyanSpecs.push({
         x: bx,
@@ -3025,7 +3072,8 @@ export function buildMonacoTrack(scene) {
       const podiumTopH = trackY + 8.5 - BUILDING_GROUND_Y;
       const pw = w * 1.95;
       const pd = d * 1.05;
-      podiumSpecs.push({ x: bx, y: BUILDING_GROUND_Y, z: bz, w: pw, h: podiumTopH, d: pd, yaw: roadYaw });
+      const podiumPal = pickContrastingPalette(side, [0, 2, 4, 3], i * 5 + 2);
+      podiumBuckets[podiumPal].push({ x: bx, y: BUILDING_GROUND_Y, z: bz, w: pw, h: podiumTopH, d: pd, yaw: roadYaw });
 
       const towerStories = 28 + ((i * 11) % 24);
       const tH = trackY + towerStories - BUILDING_GROUND_Y;
@@ -3040,13 +3088,15 @@ export function buildMonacoTrack(scene) {
       if (!isInsideHarborWater(lx, lz, 12 + w * 0.45) && !isInsideHarborWater(rx, rz, 12 + w * 0.45)) {
         const twW = w * 0.68;
         const twD = d * 0.68;
-        const bucket = i % 2 === 0 ? twinTowerE : twinTowerS;
-        bucket.push({ x: lx, y: BUILDING_GROUND_Y, z: lz, w: twW, h: tH, d: twD, yaw: roadYaw });
-        bucket.push({ x: rx, y: BUILDING_GROUND_Y, z: rz, w: twW, h: tH * 0.94, d: twD, yaw: roadYaw });
+        const twChoices = [0, 1, 2, 3].filter((pIdx) => pIdx !== podiumPal);
+        const twPal = twChoices[(i * 7) % twChoices.length];
+        const sbPal = [1, 2, 3].find((pIdx) => pIdx !== twPal) ?? 1;
+        twinTowerBuckets[twPal].push({ x: lx, y: BUILDING_GROUND_Y, z: lz, w: twW, h: tH, d: twD, yaw: roadYaw });
+        twinTowerBuckets[twPal].push({ x: rx, y: BUILDING_GROUND_Y, z: rz, w: twW, h: tH * 0.94, d: twD, yaw: roadYaw });
 
         // Glowing glass skybridge linking the twin towers
         const bridgeY = BUILDING_GROUND_Y + tH * 0.58;
-        skybridgeSpecs.push({
+        skybridgeBuckets[sbPal].push({
           x: bx,
           y: bridgeY,
           z: bz,
@@ -3078,10 +3128,10 @@ export function buildMonacoTrack(scene) {
       const stories = i % 6 === 0 ? 44 + ((i * 13) % 28) : 26 + ((i * 11) % 18);
       const h = trackY + stories - BUILDING_GROUND_Y;
       const spec = { x: bx, y: BUILDING_GROUND_Y, z: bz, w, h, d, yaw: roadYaw };
+      const palIdx = pickContrastingPalette(side, h < 38 ? [0, 1, 2, 3, 4] : [0, 1, 2, 3], i * 7 + 3);
 
-      if (h < 38) taperedLowE.push(spec);
-      else if (i % 2 === 0) taperedHighE.push(spec);
-      else taperedHighC.push(spec);
+      if (h < 38) taperedLowBuckets[palIdx].push(spec);
+      else taperedHighBuckets[palIdx].push(spec);
 
       taperedFinsSpecs.push(spec);
 
@@ -3120,14 +3170,11 @@ export function buildMonacoTrack(scene) {
       const stories = 24 + ((i * 17) % 34);
       const h = trackY + stories - BUILDING_GROUND_Y;
       const spec = { x: bx, y: BUILDING_GROUND_Y, z: bz, w, h, d, yaw: roadYaw };
+      const candidates = (nearHarbor || stories < 38) ? [0, 1, 2, 3, 4] : [0, 1, 2, 3];
+      const palIdx = pickContrastingPalette(side, candidates, i * 11 + 5);
 
-      if (isHelix) {
-        if (i % 4 === 0) helixS.push(spec);
-        else helixE.push(spec);
-      } else {
-        if (i % 4 === 1) sailC.push(spec);
-        else sailS.push(spec);
-      }
+      if (isHelix) helixBuckets[palIdx].push(spec);
+      else sailBuckets[palIdx].push(spec);
 
       // Vertical glowing architectural light strip facing circuit
       const stripX = bx + (nearR.x * (-side)) * (w * 0.36);
@@ -3164,40 +3211,40 @@ export function buildMonacoTrack(scene) {
     scene.add(im);
   };
 
-  // Archetype A batches
-  spawnTowerBatch(taperedLowE, makeTaperedDiagridTowerGeo(2.5, 2.2), glassEmeraldMat);
-  spawnTowerBatch(taperedHighE, makeTaperedDiagridTowerGeo(2.5, 3.6), glassEmeraldMat);
-  spawnTowerBatch(taperedHighC, makeTaperedDiagridTowerGeo(2.5, 3.6), glassChampagneMat);
-  spawnTowerBatch(taperedFinsSpecs, makeTaperedFinsGeo(), frameMetalMat, false);
+  const taperedLowGeo = makeTaperedDiagridTowerGeo(2.5, 2.2);
+  const taperedHighGeo = makeTaperedDiagridTowerGeo(2.5, 3.6);
+  const helixGeo = makeTwistedHelixTowerGeo(3.0, 2.8);
+  const sailGeo = makeCurvedSailTowerGeo(3.0, 2.8);
+  const podiumGeo = makeChamferedBoxGeo(4.0, 1.0);
+  const twinGeo = makeChamferedBoxGeo(2.5, 3.0);
+  const pavilionGeo = makeOrganicPavilionGeo(2.5, 1.4);
+  const sbGeo = new THREE.BoxGeometry(1, 1, 1);
 
-  // Archetype B batches (Twisted Helix & Curved Sail)
-  spawnTowerBatch(helixS, makeTwistedHelixTowerGeo(3.0, 2.8), glassSilverMat);
-  spawnTowerBatch(helixE, makeTwistedHelixTowerGeo(3.0, 2.8), glassEmeraldMat);
-  spawnTowerBatch(sailC, makeCurvedSailTowerGeo(3.0, 2.8), glassChampagneMat);
-  spawnTowerBatch(sailS, makeCurvedSailTowerGeo(3.0, 2.8), glassSilverMat);
-
-  // Archetype C batches (Retail Podiums + Twin Towers + Skybridges)
-  spawnTowerBatch(podiumSpecs, makeChamferedBoxGeo(4.0, 1.0), glassSilverMat);
-  spawnTowerBatch(twinTowerE, makeChamferedBoxGeo(2.5, 3.0), glassEmeraldMat);
-  spawnTowerBatch(twinTowerS, makeChamferedBoxGeo(2.5, 3.0), glassSilverMat);
-  if (skybridgeSpecs.length) {
-    const sbGeo = new THREE.BoxGeometry(1, 1, 1);
-    const sbIM = new THREE.InstancedMesh(sbGeo, glassChampagneMat, skybridgeSpecs.length);
-    sbIM.castShadow = true;
-    skybridgeSpecs.forEach((sb, i) => {
-      dummy.position.set(sb.x, sb.y, sb.z);
-      dummy.rotation.set(0, sb.yaw, 0);
-      dummy.scale.set(sb.w, sb.h, sb.d);
-      dummy.updateMatrix();
-      sbIM.setMatrixAt(i, dummy.matrix);
-    });
-    sbIM.instanceMatrix.needsUpdate = true;
-    sbIM.computeBoundingSphere();
-    scene.add(sbIM);
+  for (let p = 0; p < 5; p++) {
+    const mat = towerPaletteMats[p];
+    spawnTowerBatch(taperedLowBuckets[p], taperedLowGeo, mat);
+    spawnTowerBatch(taperedHighBuckets[p], taperedHighGeo, mat);
+    spawnTowerBatch(helixBuckets[p], helixGeo, mat);
+    spawnTowerBatch(sailBuckets[p], sailGeo, mat);
+    spawnTowerBatch(podiumBuckets[p], podiumGeo, mat);
+    spawnTowerBatch(twinTowerBuckets[p], twinGeo, mat);
+    spawnTowerBatch(pavilionBuckets[p], pavilionGeo, mat);
+    if (skybridgeBuckets[p].length) {
+      const sbIM = new THREE.InstancedMesh(sbGeo, mat, skybridgeBuckets[p].length);
+      sbIM.castShadow = true;
+      skybridgeBuckets[p].forEach((sb, i) => {
+        dummy.position.set(sb.x, sb.y, sb.z);
+        dummy.rotation.set(0, sb.yaw, 0);
+        dummy.scale.set(sb.w, sb.h, sb.d);
+        dummy.updateMatrix();
+        sbIM.setMatrixAt(i, dummy.matrix);
+      });
+      sbIM.instanceMatrix.needsUpdate = true;
+      sbIM.computeBoundingSphere();
+      scene.add(sbIM);
+    }
   }
-
-  // Archetype D batch (Zaha Hadid Organic Pavilions)
-  spawnTowerBatch(pavilionSpecs, makeOrganicPavilionGeo(2.5, 1.4), zahaMat);
+  spawnTowerBatch(taperedFinsSpecs, makeTaperedFinsGeo(), frameMetalMat, false);
 
   // Glowing Architectural LED Accent Strips & Spires
   const spawnLedBatch = (specs, mat) => {

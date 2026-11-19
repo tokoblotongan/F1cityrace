@@ -18,7 +18,12 @@ const A1 = (3.1 * G) / (TOP_SPEED * TOP_SPEED); // downforce grip slope
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
+const CAR_HALF_LENGTH = 2.3;  // 4.6m chassis + wings length
+const CAR_HALF_WIDTH = 0.95;  // 1.9m tire-to-tire width
+const CAR_BROAD_RADIUS_SQ = 26.5; // (2 * hypot(2.3, 0.95))^2 + margin
+
 const _fwd = new THREE.Vector3();
+const _right = new THREE.Vector3();
 const _delta = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0);
 const _dir = new THREE.Vector3();
@@ -1134,6 +1139,11 @@ export function createF1Car(colorHex = 0xe10600, isPlayer = false) {
   };
   car.userData.physics = {
     speed: 0,
+    latVel: 0,
+    yawVel: 0,
+    knockTimer: 0,
+    scrapeLevel: 0,
+    scrapeTimer: 0,
     slip: 0,
     hit: 0,
     steerVis: 0,
@@ -1177,6 +1187,11 @@ export function resetCarHealth(car) {
   P.damageCooldown = 0;
   P.repairFlash = 0;
   P.hit = 0;
+  P.latVel = 0;
+  P.yawVel = 0;
+  P.knockTimer = 0;
+  P.scrapeLevel = 0;
+  P.scrapeTimer = 0;
 }
 
 function findNearestIndex(posArr, x, z, hintIdx, N) {
@@ -1221,6 +1236,80 @@ function computeGearAndRpm(speed) {
   return { gear, rpm };
 }
 
+export function clampCarToTrack(car, trackData, dt = 0, isSeparationPass = false, steer = 0) {
+  const P = car.userData.physics;
+  const sd = trackData.trackCurve.userData.samples;
+  const N = sd.count;
+  const halfWidth = trackData.trackCurve.userData.halfWidth;
+
+  const idx = findNearestIndex(sd.pos, car.position.x, car.position.z, P.lastIdx, N);
+  P.lastIdx = idx;
+  P.u = idx / N;
+
+  const p = sd.pos[idx];
+  const r = sd.right[idx];
+  const t = sd.tan[idx];
+
+  _delta.set(car.position.x - p.x, 0, car.position.z - p.z);
+  const lateral = _delta.dot(r);
+  const maxLat = halfWidth - 1.05;
+
+  if (Math.abs(lateral) > maxLat) {
+    const sign = Math.sign(lateral);
+    const clampedLat = sign * maxLat;
+    const corr = clampedLat - lateral;
+    car.position.x += r.x * corr;
+    car.position.z += r.z * corr;
+
+    const fX = -Math.sin(P.yaw);
+    const fZ = -Math.cos(P.yaw);
+    const rX = Math.cos(P.yaw);
+    const rZ = -Math.sin(P.yaw);
+    const vx = fX * P.speed + rX * (P.latVel || 0);
+    const vz = fZ * P.speed + rZ * (P.latVel || 0);
+    const outDot = (vx * r.x + vz * r.z) * sign;
+
+    if (isSeparationPass) {
+      if (outDot > 0) {
+        const nvx = vx - r.x * sign * outDot;
+        const nvz = vz - r.z * sign * outDot;
+        P.speed = Math.max(0, nvx * fX + nvz * fZ);
+        P.latVel = clamp(nvx * rX + nvz * rZ, -24, 24);
+      }
+      P.yawVel = (P.yawVel || 0) * 0.55;
+    } else {
+      const tangentYaw = Math.atan2(-t.x, -t.z);
+      const yawErr = Math.abs(wrapAngle(P.yaw - tangentYaw));
+      const wallImpact = clamp((yawErr * P.speed + Math.max(0, outDot) * 1.4) / 28, 0.15, 1);
+      if (P.speed > 12 || outDot > 5) P.hit = Math.max(P.hit, wallImpact);
+      if (car.userData.isPlayer && (P.speed > 15 || outDot > 15) && (yawErr > 0.08 || P.speed > 26 || outDot > 15)) {
+        const impactSpeed = Math.max(P.speed * clamp(0.42 + yawErr * 0.95, 0.42, 1.0), outDot);
+        if (impactSpeed > 15) applyCarDamage(car, impactSpeed);
+      }
+      P.speed *= 0.92;
+      if (outDot > 0) {
+        const nvx = (vx - r.x * sign * outDot * 1.25) * 0.92;
+        const nvz = (vz - r.z * sign * outDot * 1.25) * 0.92;
+        P.latVel = clamp(nvx * rX + nvz * rZ, -20, 20);
+      }
+      P.yaw = wrapAngle(P.yaw + wrapAngle(tangentYaw - P.yaw) * 0.45);
+      P.yawVel = (P.yawVel || 0) * 0.35;
+    }
+  }
+
+  car.position.y = p.y;
+  const slopePitch = Math.asin(clamp(t.y, -1, 1));
+  const rollBank = clamp(
+    -steer * clamp(P.speed / 70, 0, 1) * 0.035 + (P.latVel || 0) * 0.0045,
+    -0.07,
+    0.07
+  );
+  car.rotation.order = 'YXZ';
+  car.rotation.set(slopePitch, P.yaw, rollBank);
+
+  return lateral;
+}
+
 export function updateCarPhysics(car, controls, trackData, dt) {
   const P = car.userData.physics;
   const parts = car.userData.parts;
@@ -1234,6 +1323,11 @@ export function updateCarPhysics(car, controls, trackData, dt) {
     const t = sd.tan[resetIdx];
     car.position.set(p.x, p.y, p.z);
     P.speed = 0;
+    P.latVel = 0;
+    P.yawVel = 0;
+    P.knockTimer = 0;
+    P.scrapeLevel = 0;
+    P.scrapeTimer = 0;
     P.slip = 0;
     P.hit = 0;
     P.steerVis = 0;
@@ -1247,12 +1341,18 @@ export function updateCarPhysics(car, controls, trackData, dt) {
       P.damageCooldown = 0;
       P.repairFlash = 0;
     }
+    car.rotation.order = 'YXZ';
     car.rotation.set(Math.asin(clamp(t.y, -1, 1)), P.yaw, 0);
   }
 
   if (dt > 0) {
     P.damageCooldown = Math.max(0, (P.damageCooldown || 0) - dt);
     P.repairFlash = Math.max(0, (P.repairFlash || 0) - dt * 1.6);
+    P.knockTimer = Math.max(0, (P.knockTimer || 0) - dt);
+    P.scrapeTimer = Math.max(0, (P.scrapeTimer || 0) - dt);
+    if (P.scrapeTimer <= 0) {
+      P.scrapeLevel = Math.max(0, (P.scrapeLevel || 0) - dt * 10);
+    }
   }
 
   const h = car.userData.isPlayer ? P.health : 100;
@@ -1285,60 +1385,42 @@ export function updateCarPhysics(car, controls, trackData, dt) {
     P.speed = clamp(P.speed + (accelPower - brakeForce - aeroDrag - rolling) * dt, 0, Math.max(0, maxV || P.speed));
     if (isDead && P.speed < 0.25) P.speed = 0;
 
-    // Downforce-scaled steering & progressive cornering grip penalty
+    // Downforce-scaled steering + collision yaw deflection with counter-steer damping
     const maxLatA = (A0 + A1 * P.speed * P.speed) * gripMult;
     const steerRadiusScale = 1 / (1 + P.speed * 0.021);
     const maxYawRate = Math.min(2.35 * steerRadiusScale, maxLatA / Math.max(P.speed, 6));
     const yawDelta = steer * maxYawRate * dt * (P.speed > 0.5 ? Math.min(1, P.speed / 5) : 0);
-    P.yaw = wrapAngle(P.yaw + yawDelta);
+    const yawVel = P.yawVel || 0;
+    P.yaw = wrapAngle(P.yaw + yawDelta + yawVel * dt);
 
+    if (yawVel !== 0) {
+      const counterSteer = steer * yawVel < 0 ? Math.abs(steer) * 6.5 : 0;
+      const yawDamp = 4.4 + gripMult * 1.4 + counterSteer;
+      P.yawVel = yawVel * Math.exp(-yawDamp * dt);
+      if (Math.abs(P.yawVel) < 0.005) P.yawVel = 0;
+    }
+
+    const latVel = P.latVel || 0;
     const reqLatA = Math.abs(steer) * maxYawRate * P.speed;
-    const isSlidingTarget = reqLatA > maxLatA * 0.84 && P.speed > 14 ? 1 : 0;
+    const knockSlip = clamp((Math.abs(latVel) - 1.2) / 8 + Math.abs(P.yawVel || 0) * 0.45, 0, 1);
+    const isSlidingTarget = (reqLatA > maxLatA * 0.84 && P.speed > 14) || knockSlip > 0.25 ? 1 : 0;
     P.slip += (isSlidingTarget - P.slip) * Math.min(1, 8 * dt);
 
-    // Advance along heading
+    // Advance along heading + lateral knock drift
     _fwd.set(-Math.sin(P.yaw), 0, -Math.cos(P.yaw));
+    _right.set(Math.cos(P.yaw), 0, -Math.sin(P.yaw));
     car.position.addScaledVector(_fwd, P.speed * dt);
+    if (latVel !== 0) {
+      car.position.addScaledVector(_right, latVel * dt);
+      const latDamp = (4.8 + gripMult * 2.8) * (P.knockTimer > 0 ? 0.72 : 1.0);
+      P.latVel = latVel * Math.exp(-latDamp * dt);
+      if (Math.abs(P.latVel) < 0.02) P.latVel = 0;
+    }
   }
 
   // Project onto circuit spline for elevation, slope & barrier clamping
-  const idx = findNearestIndex(sd.pos, car.position.x, car.position.z, P.lastIdx, N);
-  P.lastIdx = idx;
-  P.u = idx / N;
-
-  const p = sd.pos[idx];
-  const r = sd.right[idx];
-  const t = sd.tan[idx];
-
-  _delta.set(car.position.x - p.x, 0, car.position.z - p.z);
-  const lateral = _delta.dot(r);
-  const maxLat = halfWidth - 1.05;
   P.hit = Math.max(0, P.hit - dt * 2.4);
-
-  if (Math.abs(lateral) > maxLat) {
-    const sign = Math.sign(lateral);
-    const clampedLat = sign * maxLat;
-    const corr = clampedLat - lateral;
-    car.position.x += r.x * corr;
-    car.position.z += r.z * corr;
-
-    const tangentYaw = Math.atan2(-t.x, -t.z);
-    const yawErr = Math.abs(wrapAngle(P.yaw - tangentYaw));
-    const wallImpact = clamp((yawErr * P.speed) / 28, 0.15, 1);
-    if (P.speed > 12) P.hit = Math.max(P.hit, wallImpact);
-    if (car.userData.isPlayer && P.speed > 15 && (yawErr > 0.08 || P.speed > 26)) {
-      const impactSpeed = P.speed * clamp(0.42 + yawErr * 0.95, 0.42, 1.0);
-      if (impactSpeed > 15) applyCarDamage(car, impactSpeed);
-    }
-    P.speed *= 0.92;
-    P.yaw = wrapAngle(P.yaw + wrapAngle(tangentYaw - P.yaw) * 0.45);
-  }
-
-  car.position.y = p.y;
-  const slopePitch = Math.asin(clamp(t.y, -1, 1));
-  const rollBank = -steer * clamp(P.speed / 70, 0, 1) * 0.035;
-  car.rotation.order = 'YXZ';
-  car.rotation.set(slopePitch, P.yaw, rollBank);
+  const lateral = clampCarToTrack(car, trackData, dt, false, steer);
 
   // Visual animations (wheels, steer, steering wheel, DRS flap, FIA rain light, glowing brake discs, repair aura)
   P.steerVis += (steer * 0.38 - P.steerVis) * Math.min(1, 14 * Math.max(dt, 0.016));
@@ -1410,6 +1492,7 @@ export function updateCarPhysics(car, controls, trackData, dt) {
     isSliding: P.slip > 0.35,
     lateralG,
     hitIntensity: P.hit,
+    scrapeIntensity: P.scrapeLevel || 0,
     onCurb,
     u: P.u,
     throttle: thr,
@@ -1419,3 +1502,282 @@ export function updateCarPhysics(car, controls, trackData, dt) {
     repairFlash: P.repairFlash,
   };
 }
+
+// --- 2D Oriented Bounding Box (OBB) SAT overlap + contact point + impulse solver ---
+function testOBBOverlap(ax, az, fAx, fAz, rAx, rAz, bx, bz, fBx, fBz, rBx, rBz) {
+  const dx = bx - ax;
+  const dz = bz - az;
+  let minOverlap = Infinity;
+  let bestNx = 0;
+  let bestNz = 0;
+
+  const checkAxis = (ux, uz, radA, radB) => {
+    const proj = dx * ux + dz * uz;
+    const overlap = radA + radB - Math.abs(proj);
+    if (overlap <= 0) return false;
+    if (overlap < minOverlap) {
+      minOverlap = overlap;
+      if (proj >= 0) {
+        bestNx = ux;
+        bestNz = uz;
+      } else {
+        bestNx = -ux;
+        bestNz = -uz;
+      }
+    }
+    return true;
+  };
+
+  const ff = Math.abs(fAx * fBx + fAz * fBz);
+  const fr = Math.abs(fAx * rBx + fAz * rBz);
+  const rf = Math.abs(rAx * fBx + rAz * fBz);
+  const rr = Math.abs(rAx * rBx + rAz * rBz);
+
+  if (!checkAxis(fAx, fAz, CAR_HALF_LENGTH, CAR_HALF_LENGTH * ff + CAR_HALF_WIDTH * fr)) return null;
+  if (!checkAxis(rAx, rAz, CAR_HALF_WIDTH, CAR_HALF_LENGTH * rf + CAR_HALF_WIDTH * rr)) return null;
+  if (!checkAxis(fBx, fBz, CAR_HALF_LENGTH * ff + CAR_HALF_WIDTH * rf, CAR_HALF_LENGTH)) return null;
+  if (!checkAxis(rBx, rBz, CAR_HALF_LENGTH * fr + CAR_HALF_WIDTH * rr, CAR_HALF_WIDTH)) return null;
+
+  return { overlap: minOverlap, nx: bestNx, nz: bestNz };
+}
+
+function estimateOBBContactPoint(ax, az, fAx, fAz, rAx, rAz, bx, bz, fBx, fBz, rBx, rBz) {
+  let sumX = 0;
+  let sumZ = 0;
+  let count = 0;
+  const tol = 0.05;
+
+  // Test 4 corners of A inside B
+  for (let sf = -1; sf <= 1; sf += 2) {
+    for (let sr = -1; sr <= 1; sr += 2) {
+      const cx = ax + fAx * sf * CAR_HALF_LENGTH + rAx * sr * CAR_HALF_WIDTH;
+      const cz = az + fAz * sf * CAR_HALF_LENGTH + rAz * sr * CAR_HALF_WIDTH;
+      const rx = cx - bx;
+      const rz = cz - bz;
+      if (
+        Math.abs(rx * fBx + rz * fBz) <= CAR_HALF_LENGTH + tol &&
+        Math.abs(rx * rBx + rz * rBz) <= CAR_HALF_WIDTH + tol
+      ) {
+        sumX += cx;
+        sumZ += cz;
+        count++;
+      }
+    }
+  }
+
+  // Test 4 corners of B inside A
+  for (let sf = -1; sf <= 1; sf += 2) {
+    for (let sr = -1; sr <= 1; sr += 2) {
+      const cx = bx + fBx * sf * CAR_HALF_LENGTH + rBx * sr * CAR_HALF_WIDTH;
+      const cz = bz + fBz * sf * CAR_HALF_LENGTH + rBz * sr * CAR_HALF_WIDTH;
+      const rx = cx - ax;
+      const rz = cz - az;
+      if (
+        Math.abs(rx * fAx + rz * fAz) <= CAR_HALF_LENGTH + tol &&
+        Math.abs(rx * rAx + rz * rAz) <= CAR_HALF_WIDTH + tol
+      ) {
+        sumX += cx;
+        sumZ += cz;
+        count++;
+      }
+    }
+  }
+
+  if (count > 0) {
+    return { x: sumX / count, z: sumZ / count };
+  }
+
+  // Fallback for rare pure edge-cross contact: clamp midpoint to both boxes
+  const mx = 0.5 * (ax + bx);
+  const mz = 0.5 * (az + bz);
+  const aLf = clamp((mx - ax) * fAx + (mz - az) * fAz, -CAR_HALF_LENGTH, CAR_HALF_LENGTH);
+  const aLr = clamp((mx - ax) * rAx + (mz - az) * rAz, -CAR_HALF_WIDTH, CAR_HALF_WIDTH);
+  const bLf = clamp((mx - bx) * fBx + (mz - bz) * fBz, -CAR_HALF_LENGTH, CAR_HALF_LENGTH);
+  const bLr = clamp((mx - bx) * rBx + (mz - bz) * rBz, -CAR_HALF_WIDTH, CAR_HALF_WIDTH);
+  return {
+    x: 0.5 * (ax + fAx * aLf + rAx * aLr + bx + fBx * bLf + rBx * bLr),
+    z: 0.5 * (az + fAz * aLf + rAz * aLr + bz + fBz * bLf + rBz * bLr),
+  };
+}
+
+export function resolveCarCollisions(cars, trackData, dt) {
+  const events = [];
+  const n = cars.length;
+  if (n < 2) return events;
+
+  const invI = 0.26; // calibrated F1 rotational inverse inertia for realistic deflection without wild spin
+  let anyMoved = false;
+
+  for (let iter = 0; iter < 2; iter++) {
+    let iterMoved = false;
+    for (let i = 0; i < n; i++) {
+      const a = cars[i];
+      const pa = a.userData.physics;
+      if (!pa || !pa.initialized) continue;
+
+      for (let j = i + 1; j < n; j++) {
+        const b = cars[j];
+        const pb = b.userData.physics;
+        if (!pb || !pb.initialized) continue;
+
+        if (Math.abs(a.position.y - b.position.y) > 2.5) continue;
+        const dx = b.position.x - a.position.x;
+        const dz = b.position.z - a.position.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > CAR_BROAD_RADIUS_SQ) continue;
+
+        const fAx = -Math.sin(pa.yaw);
+        const fAz = -Math.cos(pa.yaw);
+        const rAx = Math.cos(pa.yaw);
+        const rAz = -Math.sin(pa.yaw);
+
+        const fBx = -Math.sin(pb.yaw);
+        const fBz = -Math.cos(pb.yaw);
+        const rBx = Math.cos(pb.yaw);
+        const rBz = -Math.sin(pb.yaw);
+
+        const sat = testOBBOverlap(
+          a.position.x, a.position.z, fAx, fAz, rAx, rAz,
+          b.position.x, b.position.z, fBx, fBz, rBx, rBz
+        );
+        if (!sat) continue;
+
+        const { overlap, nx, nz } = sat;
+        const contact = estimateOBBContactPoint(
+          a.position.x, a.position.z, fAx, fAz, rAx, rAz,
+          b.position.x, b.position.z, fBx, fBz, rBx, rBz
+        );
+
+        // 1. Hard positional separation (equal mass 0.5 / 0.5, zero clipping)
+        const sep = overlap + 0.002;
+        a.position.x -= nx * sep * 0.5;
+        a.position.z -= nz * sep * 0.5;
+        b.position.x += nx * sep * 0.5;
+        b.position.z += nz * sep * 0.5;
+        iterMoved = true;
+        anyMoved = true;
+
+        // 2. Apply momentum transfer, yaw deflection & side-by-side friction once per substep
+        if (iter === 0) {
+          const armAx = contact.x - a.position.x;
+          const armAz = contact.z - a.position.z;
+          const armBx = contact.x - b.position.x;
+          const armBz = contact.z - b.position.z;
+
+          const vAx = fAx * pa.speed + rAx * (pa.latVel || 0);
+          const vAz = fAz * pa.speed + rAz * (pa.latVel || 0);
+          const vBx = fBx * pb.speed + rBx * (pb.latVel || 0);
+          const vBz = fBz * pb.speed + rBz * (pb.latVel || 0);
+
+          const wA = pa.yawVel || 0;
+          const wB = pb.yawVel || 0;
+          const vpAx = vAx + wA * armAz;
+          const vpAz = vAz - wA * armAx;
+          const vpBx = vBx + wB * armBz;
+          const vpBz = vBz - wB * armBx;
+
+          const rvx = vpBx - vpAx;
+          const rvz = vpBz - vpAz;
+          const vRelN = rvx * nx + rvz * nz;
+          const closingSpeed = Math.max(0, -vRelN);
+
+          const tx = -nz;
+          const tz = nx;
+          const vRelT = rvx * tx + rvz * tz;
+
+          const rnA = armAz * nx - armAx * nz;
+          const rnB = armBz * nx - armBx * nz;
+          const denomN = 2.0 + rnA * rnA * invI + rnB * rnB * invI;
+
+          const rtA = armAz * tx - armAx * tz;
+          const rtB = armBz * tx - armBx * tz;
+          const denomT = 2.0 + rtA * rtA * invI + rtB * rtB * invI;
+
+          let jn = 0;
+          if (vRelN < 0) {
+            const e = closingSpeed > 2.0 ? 0.45 : 0.08;
+            jn = (-(1 + e) * vRelN) / denomN;
+          }
+
+          const jtImpact = jn > 0 ? clamp(-vRelT / denomT, -0.28 * jn, 0.28 * jn) : 0;
+          const absTan = Math.abs(vRelT);
+          const isScraping = absTan > 1.2 || (closingSpeed > 0.4 && absTan > 0.6);
+          const jtScrape =
+            isScraping && dt > 0
+              ? clamp(-vRelT * Math.min(0.25, 1.15 * dt), -0.35, 0.35)
+              : 0;
+          const jt = jtImpact + jtScrape;
+
+          const dvAx = -jn * nx - jt * tx;
+          const dvAz = -jn * nz - jt * tz;
+          const dvBx = jn * nx + jt * tx;
+          const dvBz = jn * nz + jt * tz;
+
+          const dFwdA = dvAx * fAx + dvAz * fAz;
+          const dLatA = dvAx * rAx + dvAz * rAz;
+          const dFwdB = dvBx * fBx + dvBz * fBz;
+          const dLatB = dvBx * rBx + dvBz * rBz;
+
+          pa.speed = Math.max(0, pa.speed + dFwdA);
+          pa.latVel = clamp((pa.latVel || 0) + dLatA, -32, 32);
+          pb.speed = Math.max(0, pb.speed + dFwdB);
+          pb.latVel = clamp((pb.latVel || 0) + dLatB, -32, 32);
+
+          // Continuous wheel/sidepod rubbing rolling drag
+          if (isScraping && dt > 0) {
+            const dragFactor = Math.max(0.85, 1 - 0.35 * dt);
+            pa.speed *= dragFactor;
+            pb.speed *= dragFactor;
+            const scrapeStr = clamp((absTan - 0.8) / 18, 0.18, 1.0);
+            pa.scrapeLevel = Math.max(pa.scrapeLevel || 0, scrapeStr);
+            pa.scrapeTimer = 0.09;
+            pb.scrapeLevel = Math.max(pb.scrapeLevel || 0, scrapeStr);
+            pb.scrapeTimer = 0.09;
+          }
+
+          // Off-center impact angular yaw deflection (wheel-to-wheel knock / clip)
+          const dYawA = (-jn * rnA - jt * rtA * 0.65) * invI;
+          const dYawB = (jn * rnB + jt * rtB * 0.65) * invI;
+          pa.yawVel = clamp((pa.yawVel || 0) + dYawA, -3.2, 3.2);
+          pb.yawVel = clamp((pb.yawVel || 0) + dYawB, -3.2, 3.2);
+
+          if (closingSpeed > 2.8 || Math.abs(dLatA) > 1.0 || Math.abs(dYawA) > 0.22) {
+            const kTime = clamp(Math.max(closingSpeed, Math.abs(dLatA) * 2) / 22, 0.25, 0.72);
+            pa.knockTimer = Math.max(pa.knockTimer || 0, kTime);
+            pb.knockTimer = Math.max(pb.knockTimer || 0, kTime);
+          }
+
+          events.push({
+            carA: a,
+            carB: b,
+            contactX: contact.x,
+            contactY: 0.5 * (a.position.y + b.position.y),
+            contactZ: contact.z,
+            normalX: nx,
+            normalZ: nz,
+            tangentX: tx,
+            tangentZ: tz,
+            closingSpeed,
+            tangentSpeed: absTan,
+            isPlayerInvolved: !!(a.userData.isPlayer || b.userData.isPlayer),
+            isScrape: isScraping,
+          });
+        }
+      }
+    }
+
+    if (!iterMoved) break;
+    for (let i = 0; i < n; i++) {
+      clampCarToTrack(cars[i], trackData, dt, true);
+    }
+  }
+
+  if (anyMoved) {
+    for (let i = 0; i < n; i++) {
+      clampCarToTrack(cars[i], trackData, dt, true);
+    }
+  }
+
+  return events;
+}
+

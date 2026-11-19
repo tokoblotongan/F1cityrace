@@ -7,14 +7,13 @@
 // ============================================================================
 
 import * as THREE from 'three';
-import { createF1Car, updateCarPhysics } from './carPhysics.js';
+import { createF1Car, updateCarPhysics, resolveCarCollisions } from './carPhysics.js';
 
 const TOTAL_LAPS = 3;
 const TOP_SPEED = 86;            // must match carPhysics.js (m/s)
 const PLAN_BRK = 26;             // conservative planning brake decel (m/s²)
 const A0 = 1.7 * 9.81;           // low-speed lateral grip (matches physics)
 const A1 = (3.1 * 9.81) / (TOP_SPEED * TOP_SPEED); // downforce grip slope
-const SEP_RADIUS = 4.6;          // soft car-car separation radius (m)
 
 const TEAMS = [
   { color: 0x00d2be, team: 'Teal Arrow GP',   driver: 'L. Moreau'  },
@@ -121,7 +120,9 @@ export function placeCarOnGrid(car, trackData, slot) {
   car.position.set(p.x + r.x * side * 2.3, p.y, p.z + r.z * side * 2.3);
 
   const P = car.userData.physics;
-  P.speed = 0; P.slip = 0; P.hit = 0; P.steerVis = 0;
+  P.speed = 0; P.latVel = 0; P.yawVel = 0; P.knockTimer = 0;
+  P.scrapeLevel = 0; P.scrapeTimer = 0;
+  P.slip = 0; P.hit = 0; P.steerVis = 0;
   P.u = u; P.lastIdx = idx;
   P.yaw = Math.atan2(-t.x, -t.z);
   P.initialized = true;
@@ -256,7 +257,17 @@ function computeAIControls(car, cars, trackData, prof, session, dt) {
   }
   latGoal = clamp(latGoal + traffic.sidePush, -(halfWidth - 1.7), halfWidth - 1.7);
   if (R.finished) latGoal = skill.lane * 0.3;
-  R.latTarget += (latGoal - R.latTarget) * Math.min(1, 1.8 * dt);
+
+  // Smooth post-knock recovery: accept displaced lane briefly instead of snapping back into player
+  const knockT = P.knockTimer || 0;
+  if (knockT > 0) {
+    const recoveryRate = Math.min(1, 0.55 * dt);
+    R.latTarget += (latGoal - R.latTarget) * recoveryRate;
+    R.latTarget = clamp(R.latTarget, R.lateral - 1.25, R.lateral + 1.25);
+    R.latTarget = clamp(R.latTarget, -(halfWidth - 1.65), halfWidth - 1.65);
+  } else {
+    R.latTarget += (latGoal - R.latTarget) * Math.min(1, 1.8 * dt);
+  }
 
   // follow the blocker until the overtake lane is actually open
   if (!R.finished && traffic.blocker && traffic.blockDist < 10 &&
@@ -270,14 +281,15 @@ function computeAIControls(car, cars, trackData, prof, session, dt) {
   if (err > 0.8) { tT = 1; bT = 0; }
   else if (err < -1.2) { tT = 0; bT = clamp(-err / 10, 0.15, 1); }
   else { tT = clamp(0.5 + err * 0.4, 0, 1); bT = 0; }
+  if (knockT > 0.1) tT *= 0.85;
   R.throttle += (tT - R.throttle) * Math.min(1, 6 * dt);
   R.brake += (bT - R.brake) * Math.min(1, 8 * dt);
 
   // ---- DRS: zones on straights, never while braking ------------------------------
-  R.drs = !R.finished && inZone && speed > 24 && R.brake < 0.1 && err > -2;
+  R.drs = !R.finished && inZone && speed > 24 && R.brake < 0.1 && err > -2 && knockT <= 0.05;
 
   // ---- pure-pursuit steering toward the lookahead waypoint ----------------------
-  const lookDist = clamp(7 + speed * 0.5, 9, 55);
+  const lookDist = clamp(7 + speed * 0.5 + knockT * 10, 9, 58);
   const j = (idx + Math.round(lookDist / prof.segLen)) % prof.N;
   const tx = sd.pos[j].x + sd.right[j].x * R.latTarget;
   const tz = sd.pos[j].z + sd.right[j].z * R.latTarget;
@@ -286,37 +298,10 @@ function computeAIControls(car, cars, trackData, prof, session, dt) {
   const instYawRate = wrapAngle(P.yaw - R.prevYaw) / Math.max(dt, 1e-4);
   R.yawRate += (instYawRate - R.yawRate) * 0.25;
   R.prevYaw = P.yaw;
-  const steer = clamp(dy * 3.0 - R.yawRate * 0.4, -1, 1);
+  const knockEase = 1 - clamp(knockT * 0.65, 0, 0.45);
+  const steer = clamp(dy * 3.0 * knockEase - (R.yawRate + (P.yawVel || 0) * 0.35) * 0.42, -1, 1);
 
   return { throttle: R.throttle, brake: R.brake, steer, drs: R.drs };
-}
-
-// --- soft car-car separation (no stacking, player keeps agency) --------------------
-function separateCars(cars) {
-  for (let i = 0; i < cars.length; i++) {
-    for (let j = i + 1; j < cars.length; j++) {
-      const a = cars[i], b = cars[j];
-      const ra = a.userData.race, rb = b.userData.race;
-      if (!ra || !rb) continue;
-      if (Math.abs(ra.lateral - rb.lateral) > 2.3) {
-        const ddx = b.position.x - a.position.x, ddz = b.position.z - a.position.z;
-        if (ddx * ddx + ddz * ddz > 10.24) continue; // clean side-by-side
-      }
-      const dx = b.position.x - a.position.x, dz = b.position.z - a.position.z;
-      const d2 = dx * dx + dz * dz;
-      if (d2 >= SEP_RADIUS * SEP_RADIUS || d2 < 1e-6) continue;
-      const d = Math.sqrt(d2), nx = dx / d, nz = dz / d;
-      const push = Math.min(0.05, (SEP_RADIUS - d) * 0.18);
-      const wa = a.userData.isPlayer ? 0.3 : 0.5, wb = b.userData.isPlayer ? 0.3 : 0.5;
-      a.position.x -= nx * push * wa; a.position.z -= nz * push * wa;
-      b.position.x += nx * push * wb; b.position.z += nz * push * wb;
-      const pa = a.userData.physics, pb = b.userData.physics;
-      const fa = (-Math.sin(pa.yaw)) * nx + (-Math.cos(pa.yaw)) * nz;
-      const fb = (-Math.sin(pb.yaw)) * nx + (-Math.cos(pb.yaw)) * nz;
-      if (fa > 0.6) pa.speed *= 0.9985;   // contact drag on the follower
-      if (fb < -0.6) pb.speed *= 0.9985;
-    }
-  }
 }
 
 // --- checkpoint-validated lap counting (player + AI) --------------------------------
@@ -421,7 +406,18 @@ export function updateAIRacers(aiList, allCars, trackData, dt) {
     localize(car, sd);
   }
 
-  separateCars(cars);
+  // Solid OBB car-to-car collision separation + momentum transfer + yaw deflection
+  const collisionEvents = resolveCarCollisions(cars, trackData, dt);
+  for (const car of cars) localize(car, sd);
+  for (const ev of collisionEvents) {
+    if (ev.closingSpeed > 2.2) {
+      for (const c of [ev.carA, ev.carB]) {
+        if (!c.userData.isPlayer && c.userData.race) {
+          c.userData.race.latTarget += (c.userData.race.lateral - c.userData.race.latTarget) * 0.55;
+        }
+      }
+    }
+  }
   for (const car of cars) validateLap(car, trackData, session);
 
   const standings = computeStandings(cars, trackData, session);
@@ -452,5 +448,6 @@ export function updateAIRacers(aiList, allCars, trackData, dt) {
     lapProgress: frac,
     finishedCount: session.finishedCount,
     totalCars: cars.length,
+    collisionEvents,
   };
 }
