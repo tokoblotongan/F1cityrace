@@ -5,6 +5,8 @@
 // cleanup function for unmount / StrictMode safety.
 // ============================================================================
 
+import { getCircuitConfig } from '../data/circuits.ts';
+
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
@@ -22,22 +24,18 @@ function fmtTime(t) {
 const code3 = (name) => (name === 'YOU' ? 'YOU' : (name.split(' ').pop() || name).slice(0, 3).toUpperCase());
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 1 · MINIMAP GEOMETRY  (mirror of track.js layout + curve math)
+// 1 · MINIMAP GEOMETRY  (dynamic mirror of active circuit layout + curve math)
 // ═══════════════════════════════════════════════════════════════════════════
-const SCALE = 1.18;
-const PTS = [
-  [40,0,160],[0,0,120],[0,0,0],[0,0,-140],[12,1,-192],[48,3,-218],[115,8,-232],
-  [195,14,-252],[243,16,-292],[252,17,-352],[288,17,-396],[332,15,-402],[372,12,-372],
-  [398,8,-322],[392,5,-262],[358,4,-228],[326,4,-252],[318,2,-306],[332,1,-356],
-  [392,0,-362],[478,0,-336],[552,0,-278],[588,0,-206],[576,0,-158],[596,0,-118],
-  [586,0,-52],[556,0,12],[516,0,52],[478,0,64],[428,0,104],[362,0,148],[304,0,190],
-  [252,0,198],[204,0,178],[122,0,168],
-].map(p => [p[0] * SCALE, p[1] * SCALE, p[2] * SCALE]);
-
-const NP = PTS.length, SEG = 1200;
+const SEG = 1600;
 const mapX = new Float32Array(SEG + 1), mapZ = new Float32Array(SEG + 1), cum = new Float32Array(SEG + 1);
+let activeCircuit = getCircuitConfig('monaco-gp');
+let PTS = activeCircuit.worldPoints;
+let NP = PTS.length;
 let mapLen = 0, startU = 0;
 const bounds = { minX: 1e9, maxX: -1e9, minZ: 1e9, maxZ: -1e9 };
+let DRZ = [];
+let TUN = null;
+let waterC = [0, 0];
 
 function axisVal(x0, x1, x2, x3, dt0, dt1, dt2, w) {
   let t1 = (x1 - x0) / dt0 - (x2 - x0) / (dt0 + dt1) + (x2 - x1) / dt1;
@@ -58,19 +56,6 @@ function curvePoint(t) {
     axisVal(p0[2], p1[2], p2[2], p3[2], dt0, dt1, dt2, w),
   ];
 }
-(function buildMapTable() {
-  let px = 0, pz = 0;
-  for (let i = 0; i <= SEG; i++) {
-    const [x, z] = curvePoint(i / SEG);
-    mapX[i] = x; mapZ[i] = z;
-    if (i > 0) cum[i] = cum[i - 1] + Math.hypot(x - px, z - pz);
-    px = x; pz = z;
-    bounds.minX = Math.min(bounds.minX, x); bounds.maxX = Math.max(bounds.maxX, x);
-    bounds.minZ = Math.min(bounds.minZ, z); bounds.maxZ = Math.max(bounds.maxZ, z);
-  }
-  mapLen = cum[SEG];
-  startU = uAtPoint(PTS[2]);
-})();
 function uAtPoint(pt) {
   let best = 0, bd = Infinity;
   for (let i = 0; i <= SEG; i++) {
@@ -86,15 +71,45 @@ function uToXY(u) {
   const i = Math.max(1, lo), f = (target - cum[i - 1]) / Math.max(1e-6, cum[i] - cum[i - 1]);
   return [mapX[i - 1] + (mapX[i] - mapX[i - 1]) * f, mapZ[i - 1] + (mapZ[i] - mapZ[i - 1]) * f];
 }
-const DRZ = [
-  [0.012, uAtPoint(PTS[3]) - 0.012],
-  [uAtPoint(PTS[21]) + 0.012, uAtPoint(PTS[23]) - 0.008],
-];
-const TUN = [uAtPoint(PTS[19]) - 0.006, uAtPoint(PTS[21]) + 0.006];
-const waterC = (() => {
-  let x = 0, z = 0; for (let k = 22; k <= 29; k++) { x += PTS[k][0]; z += PTS[k][2]; }
-  return [x / 8 + 60, z / 8];
-})();
+function rebuildMinimapGeometry(circuitId = 'monaco-gp') {
+  activeCircuit = getCircuitConfig(circuitId);
+  PTS = activeCircuit.worldPoints;
+  NP = PTS.length;
+  bounds.minX = 1e9; bounds.maxX = -1e9; bounds.minZ = 1e9; bounds.maxZ = -1e9;
+  let px = 0, pz = 0;
+  for (let i = 0; i <= SEG; i++) {
+    const [x, z] = curvePoint(i / SEG);
+    mapX[i] = x; mapZ[i] = z;
+    if (i > 0) cum[i] = cum[i - 1] + Math.hypot(x - px, z - pz);
+    else cum[0] = 0;
+    px = x; pz = z;
+    bounds.minX = Math.min(bounds.minX, x); bounds.maxX = Math.max(bounds.maxX, x);
+    bounds.minZ = Math.min(bounds.minZ, z); bounds.maxZ = Math.max(bounds.maxZ, z);
+  }
+  mapLen = cum[SEG];
+  startU = uAtPoint(PTS[activeCircuit.startIndex]);
+
+  DRZ = activeCircuit.drsPointPairs.map(([aIdx, bIdx]) => [
+    uAtPoint(PTS[aIdx]) + 0.010,
+    uAtPoint(PTS[bIdx]) - 0.008,
+  ]);
+
+  if (activeCircuit.tunnelPointPair) {
+    const [ta, tb] = activeCircuit.tunnelPointPair;
+    TUN = [uAtPoint(PTS[ta]) - 0.006, uAtPoint(PTS[tb]) + 0.006];
+  } else {
+    TUN = null;
+  }
+
+  if (activeCircuit.hasHarborWater && PTS.length >= 30) {
+    let wx = 0, wz = 0;
+    for (let k = 22; k <= 29; k++) { wx += PTS[k][0]; wz += PTS[k][2]; }
+    waterC = [wx / 8 + 60, wz / 8];
+  } else {
+    waterC = [0, 0];
+  }
+}
+rebuildMinimapGeometry('monaco-gp');
 
 const mm = { ctx: null, base: null, w: 0, h: 0, dpr: 1, tx: null };
 function mmSize() {
@@ -111,7 +126,7 @@ function mmSize() {
 }
 function mmPath(g, u0, u1) {
   g.beginPath();
-  const steps = Math.max(2, Math.ceil((u1 - u0) * SEG));
+  const steps = Math.max(2, Math.ceil(Math.abs(u1 - u0) * SEG));
   for (let k = 0; k <= steps; k++) {
     const [x, z] = uToXY(u0 + (u1 - u0) * (k / steps));
     const [cx, cy] = mm.tx(x, z);
@@ -148,23 +163,29 @@ function mmRenderBase() {
   const b = document.createElement('canvas');
   b.width = mm.w * mm.dpr; b.height = mm.h * mm.dpr;
   const g = b.getContext('2d'); g.scale(mm.dpr, mm.dpr);
-  const [wx, wy] = mm.tx(waterC[0] - 280, waterC[1] - 230);
-  const [wx2, wy2] = mm.tx(waterC[0] + 280, waterC[1] + 230);
-  const hg = g.createLinearGradient(wx, wy, wx2, wy2);
-  hg.addColorStop(0, 'rgba(0,210,190,0.10)'); hg.addColorStop(1, 'rgba(59,130,246,0.14)');
-  g.fillStyle = hg;
-  g.beginPath();
-  if (g.roundRect) g.roundRect(wx, wy, wx2 - wx, wy2 - wy, 14);
-  else g.rect(wx, wy, wx2 - wx, wy2 - wy);
-  g.fill();
+
+  if (activeCircuit.hasHarborWater) {
+    const [wx, wy] = mm.tx(waterC[0] - 280, waterC[1] - 230);
+    const [wx2, wy2] = mm.tx(waterC[0] + 280, waterC[1] + 230);
+    const hg = g.createLinearGradient(wx, wy, wx2, wy2);
+    hg.addColorStop(0, 'rgba(0,210,190,0.10)'); hg.addColorStop(1, 'rgba(59,130,246,0.14)');
+    g.fillStyle = hg;
+    g.beginPath();
+    if (g.roundRect) g.roundRect(wx, wy, wx2 - wx, wy2 - wy, 14);
+    else g.rect(wx, wy, wx2 - wx, wy2 - wy);
+    g.fill();
+  }
 
   g.lineJoin = g.lineCap = 'round';
   mmPath(g, 0, 1); g.closePath();
-  g.strokeStyle = 'rgba(0,210,190,0.22)'; g.lineWidth = 7; g.stroke();
+  g.strokeStyle = activeCircuit.id === 'salatiga-gp' ? 'rgba(34,255,136,0.22)' : 'rgba(0,210,190,0.22)';
+  g.lineWidth = 7; g.stroke();
   g.strokeStyle = 'rgba(242,239,230,0.88)'; g.lineWidth = 2.6; g.stroke();
 
-  mmPath(g, TUN[0], TUN[1]);
-  g.strokeStyle = 'rgba(255,176,32,0.9)'; g.lineWidth = 3.4; g.setLineDash([4, 3]); g.stroke(); g.setLineDash([]);
+  if (TUN) {
+    mmPath(g, TUN[0], TUN[1]);
+    g.strokeStyle = 'rgba(255,176,32,0.9)'; g.lineWidth = 3.4; g.setLineDash([4, 3]); g.stroke(); g.setLineDash([]);
+  }
 
   for (const [a, z] of DRZ) {
     mmPath(g, a, z);
@@ -174,14 +195,26 @@ function mmRenderBase() {
   const [sx0, sz0] = uToXY(startU), [sx1, sz1] = uToXY(startU + 0.004);
   const [cx, cy] = mm.tx(sx0, sz0);
   let dx = sx1 - sx0, dz = sz1 - sz0; const dl = Math.hypot(dx, dz) || 1; dx /= dl; dz /= dl;
-  g.strokeStyle = '#f2efe6'; g.lineWidth = 2.4;
+  g.strokeStyle = '#ff2d1a'; g.lineWidth = 2.8;
   g.beginPath(); g.moveTo(cx - dz * 6, cy + dx * 6); g.lineTo(cx + dz * 6, cy - dx * 6); g.stroke();
 
-  g.font = '700 7px "Titillium Web", sans-serif'; g.fillStyle = 'rgba(242,239,230,0.5)';
-  const label = (pi, txt, ox, oy) => { const [x, y] = mm.tx(PTS[pi][0], PTS[pi][2]); g.fillText(txt, x + ox, y + oy); };
-  label(9, 'CASINO', -40, -6); label(20, 'TUNNEL', -12, -9); label(27, 'PISCINE', 7, 4); label(31, 'RASCASSE', -14, 13);
+  g.font = '700 7px "Titillium Web", sans-serif'; g.fillStyle = 'rgba(242,239,230,0.58)';
+  for (const lbl of activeCircuit.minimapLabels) {
+    const pt = PTS[lbl.pointIndex];
+    if (!pt) continue;
+    const [x, y] = mm.tx(pt[0], pt[2]);
+    g.fillText(lbl.label, x + lbl.ox, y + lbl.oy);
+  }
   mm.base = b;
-  setText(els.minimapLabel, 'CIRCUIT DE MONACO - 3.34 KM');
+  setText(els.minimapLabel, `${activeCircuit.circuitTitle} - ${activeCircuit.lengthLabel}`);
+}
+
+export function setHudCircuit(circuitId = 'monaco-gp') {
+  rebuildMinimapGeometry(circuitId);
+  if (!els.minimap) els.minimap = $('minimap');
+  if (!els.minimapLabel) els.minimapLabel = $('minimap-label');
+  if (els.minimapLabel) els.minimapLabel.__v = null;
+  mmSize();
 }
 function mmDraw(raceState, now) {
   if (!ensureMinimapCanvas()) return;
@@ -1019,7 +1052,7 @@ function updateEvents(rs, now) {
     }
     if (!rs.waitingToStart) {
       if (rs.startLights > prevLights) tone(660, 0.14, 0.12);
-      announce('MONACO GP', 'STREET CIRCUIT CHALLENGE · 3 LAPS · 8 CARS', '', 0);
+      announce(activeCircuit.gpTitle, 'STREET CIRCUIT CHALLENGE · 3 LAPS · 8 CARS', '', 0);
     } else if (els.announce) {
       els.announce.className = '';
     }
@@ -1081,7 +1114,7 @@ function renderFinish(rs) {
   setText(els.finishTitle, p === 1 ? 'VICTORY!' : `P${p} — RACE COMPLETE`);
   els.card?.classList.toggle('win', p === 1);
   const me = rs.standings.find(e => e.isPlayer);
-  setText(els.finishSub, `CIRCUIT DE MONACO · ${rs.totalLaps} LAPS · BEST ${fmtTime(me && me.bestLapTime)}`);
+  setText(els.finishSub, `${activeCircuit.circuitTitle} · ${rs.totalLaps} LAPS · BEST ${fmtTime(me && me.bestLapTime)}`);
 }
 function openFinish(rs) {
   modalOpen = true; finishSig = '';

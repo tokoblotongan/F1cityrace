@@ -85,10 +85,11 @@ function getProfile(trackData) {
 }
 
 // --- grid placement + race metadata -------------------------------------------
-function freshRace(car, u) {
+function freshRace(car, u, trackData) {
   const P = car.userData.physics;
   const isPlayer = !!car.userData.isPlayer;
   const id = isPlayer ? PLAYER_ID : car.userData;
+  const teamName = isPlayer ? (trackData?.playerTeam || PLAYER_ID.team) : (id.team || PLAYER_ID.team);
   return {
     u, prevU: u, lateral: 0, latTarget: 0,
     lap: 0, nextCp: 0, lapsCompleted: 0, lapStart: 0,
@@ -100,7 +101,7 @@ function freshRace(car, u) {
     gap: 0, gapText: '',
     traffic: { blockDist: Infinity, blocker: null, blockLat: 0, blockSpeed: 0, sidePush: 0 },
     entry: {
-      position: 0, name: id.driver || 'YOU', team: id.team || 'Scuderia Monaco',
+      position: 0, name: id.driver || 'YOU', team: teamName,
       color: '#' + new THREE.Color(id.color ?? PLAYER_ID.color).getHexString(),
       isPlayer, gridSlot: car.userData.gridSlot ?? 0,
       lap: 1, lapsCompleted: 0, progress: 0, gap: 0, gapText: '',
@@ -113,7 +114,9 @@ function freshRace(car, u) {
 export function placeCarOnGrid(car, trackData, slot) {
   const sd = trackData.trackCurve.userData.samples;
   const startU = trackData.startFinishLine.u;
-  const u = (startU - 0.004 - slot * 0.0035 + 1) % 1;   // matches painted grid boxes
+  const poleLeadU = trackData.startFinishLine.poleLeadU ?? 0.004;
+  const gridStepU = trackData.startFinishLine.gridStepU ?? 0.0035;
+  const u = (startU - poleLeadU - slot * gridStepU + 1) % 1;   // matches painted grid boxes
   const idx = Math.round(u * sd.count) % sd.count;
   const p = sd.pos[idx], r = sd.right[idx], t = sd.tan[idx];
   const side = slot % 2 ? 1 : -1;
@@ -130,12 +133,12 @@ export function placeCarOnGrid(car, trackData, slot) {
   car.rotation.set(Math.asin(clamp(t.y, -1, 1)), P.yaw, 0);
 
   car.userData.gridSlot = slot;
-  if (car.userData.isPlayer && !car.userData.team) {
-    car.userData.team = PLAYER_ID.team;
-    car.userData.driver = PLAYER_ID.driver;
-    car.userData.color = PLAYER_ID.color;
+  if (car.userData.isPlayer) {
+    car.userData.team = trackData.playerTeam || PLAYER_ID.team;
+    if (!car.userData.driver) car.userData.driver = PLAYER_ID.driver;
+    if (!car.userData.color) car.userData.color = PLAYER_ID.color;
   }
-  car.userData.race = freshRace(car, u);
+  car.userData.race = freshRace(car, u, trackData);
   car.userData.race.lateral = side * 2.3;
   car.userData.race.latTarget = side * 2.3;
 }
@@ -143,7 +146,7 @@ export function placeCarOnGrid(car, trackData, slot) {
 function ensureRace(car, trackData) {
   if (!car.userData.race) {
     const P = car.userData.physics;
-    car.userData.race = freshRace(car, P.u || trackData.startFinishLine.u);
+    car.userData.race = freshRace(car, P.u || trackData.startFinishLine.u, trackData);
   }
 }
 

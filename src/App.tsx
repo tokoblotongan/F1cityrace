@@ -1,4 +1,10 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
+import {
+  CIRCUIT_LIST,
+  CircuitConfig,
+  CircuitId,
+  getCircuitConfig,
+} from './data/circuits.ts';
 import { initAudio, initHud } from './game/audioHud.js';
 import {
   EngineController,
@@ -7,7 +13,6 @@ import {
   startMonacoEngine,
 } from './game/engine.ts';
 
-const RECORDS_STORAGE_KEY = 'f1_monaco_podium_records';
 const LAST_NAME_STORAGE_KEY = 'f1_monaco_last_driver_name';
 const MAX_HALL_OF_FAME = 10;
 
@@ -38,9 +43,9 @@ function sortAndTrimRecords(records: PodiumRecord[]): PodiumRecord[] {
     .slice(0, MAX_HALL_OF_FAME);
 }
 
-function loadStoredRecords(): PodiumRecord[] {
+function loadStoredRecords(storageKey: string): PodiumRecord[] {
   try {
-    const raw = window.localStorage.getItem(RECORDS_STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -59,9 +64,9 @@ function loadStoredRecords(): PodiumRecord[] {
   }
 }
 
-function saveStoredRecords(records: PodiumRecord[]): void {
+function saveStoredRecords(storageKey: string, records: PodiumRecord[]): void {
   try {
-    window.localStorage.setItem(RECORDS_STORAGE_KEY, JSON.stringify(records));
+    window.localStorage.setItem(storageKey, JSON.stringify(records));
   } catch {
     // Ignore storage quota / privacy mode errors
   }
@@ -208,22 +213,142 @@ function WeatherIcon({ type, className = 'w-6 h-6' }: { type: WeatherType; class
   );
 }
 
+function CircuitSvgMap({ config, selected }: { config: CircuitConfig; selected: boolean }) {
+  const { svgData, id } = config;
+  const isSalatiga = id === 'salatiga-gp';
+  const filterId = `track-glow-${id}`;
+  const haloColor = isSalatiga ? '#22ff88' : '#00d2be';
+  const coreColor = isSalatiga ? (selected ? '#fef08a' : '#f2efe6') : '#f2efe6';
+  const accentLabelColor = isSalatiga ? '#a7f3d0' : '#bae6fd';
+
+  return (
+    <svg
+      viewBox={svgData.viewBox}
+      className="w-full h-[112px] sm:h-[124px] select-none overflow-visible"
+      role="img"
+      aria-label={`${config.circuitTitle} track layout`}
+    >
+      <defs>
+        <filter id={filterId} x="-25%" y="-25%" width="150%" height="150%">
+          <feGaussianBlur stdDeviation="3.2" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+
+      {/* Outer neon glow silhouette */}
+      <path
+        d={svgData.path}
+        fill="none"
+        stroke={haloColor}
+        strokeWidth={selected ? 7 : 5}
+        strokeOpacity={selected ? 0.36 : 0.20}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        filter={`url(#${filterId})`}
+      />
+
+      {/* Crisp main track ribbon */}
+      <path
+        d={svgData.path}
+        fill="none"
+        stroke={coreColor}
+        strokeWidth="2.8"
+        strokeOpacity={selected ? 0.96 : 0.78}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+
+      {/* DRS straight highlights */}
+      {svgData.drsPaths.map((dp, i) => (
+        <path
+          key={i}
+          d={dp}
+          fill="none"
+          stroke={isSalatiga ? '#facc15' : '#22ff88'}
+          strokeWidth="3.2"
+          strokeOpacity="0.9"
+          strokeLinecap="round"
+        />
+      ))}
+
+      {/* Tunnel highlight (Monaco) */}
+      {svgData.tunnelPath && (
+        <path
+          d={svgData.tunnelPath}
+          fill="none"
+          stroke="#ffb020"
+          strokeWidth="3.5"
+          strokeDasharray="4 3"
+          strokeLinecap="round"
+        />
+      )}
+
+      {/* Red Start / Finish perpendicular line + dot */}
+      <line
+        x1={svgData.startLine.x1}
+        y1={svgData.startLine.y1}
+        x2={svgData.startLine.x2}
+        y2={svgData.startLine.y2}
+        stroke="#ff2d1a"
+        strokeWidth="3"
+        strokeLinecap="round"
+      />
+      <circle
+        cx={svgData.startDot.x}
+        cy={svgData.startDot.y}
+        r="3.4"
+        fill="#ff2d1a"
+        stroke="#f2efe6"
+        strokeWidth="1.2"
+      />
+
+      {/* Corner & Landmark Annotations */}
+      {svgData.markers.map((m, idx) => (
+        <g key={idx}>
+          <circle cx={m.x} cy={m.y} r="2.2" fill={haloColor} />
+          <text
+            x={m.x + m.dx}
+            y={m.y + m.dy}
+            textAnchor={m.anchor}
+            fill={accentLabelColor}
+            fillOpacity={selected ? 0.94 : 0.72}
+            fontSize="7.4"
+            fontWeight="700"
+            fontFamily="Titillium Web, sans-serif"
+            letterSpacing="0.04em"
+          >
+            {m.label}
+          </text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const controllerRef = useRef<EngineController | null>(null);
   const [webglError, setWebglError] = useState<string | null>(null);
+  const [circuit, setCircuit] = useState<CircuitId>('monaco-gp');
   const [weather, setWeather] = useState<WeatherType>('cerah');
   const [raceStarted, setRaceStarted] = useState(false);
   const [showWeatherMenu, setShowWeatherMenu] = useState(false);
   const [showMinimap, setShowMinimap] = useState(true);
-  const [records, setRecords] = useState<PodiumRecord[]>(() => loadStoredRecords());
+  const [records, setRecords] = useState<PodiumRecord[]>(() =>
+    loadStoredRecords(getCircuitConfig('monaco-gp').recordsStorageKey)
+  );
   const [finishResult, setFinishResult] = useState<RaceFinishResult | null>(null);
   const [driverName, setDriverName] = useState<string>(() => loadLastDriverName());
   const [savedRecordId, setSavedRecordId] = useState<string | null>(null);
   const [savedDriverName, setSavedDriverName] = useState<string | null>(null);
   const [showHallOfFameModal, setShowHallOfFameModal] = useState(false);
   const [chequeredCountdown, setChequeredCountdown] = useState<number | null>(null);
+
+  const activeCircuit = getCircuitConfig(circuit);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -257,6 +382,7 @@ export default function App() {
     const cleanupHud = initHud();
     const cleanupEngine = startMonacoEngine(canvas, {
       initialWeather: 'cerah',
+      initialCircuit: 'monaco-gp',
       onReady: (ctrl) => {
         controllerRef.current = ctrl;
       },
@@ -314,6 +440,14 @@ export default function App() {
     return () => observer.disconnect();
   }, [finishResult, savedDriverName]);
 
+  const handleSelectCircuit = (cId: CircuitId) => {
+    setCircuit(cId);
+    setRecords(loadStoredRecords(getCircuitConfig(cId).recordsStorageKey));
+    setSavedRecordId(null);
+    setSavedDriverName(null);
+    controllerRef.current?.setCircuit(cId);
+  };
+
   const handleSelectStartWeather = (w: WeatherType) => {
     setWeather(w);
     controllerRef.current?.setWeather(w);
@@ -323,7 +457,7 @@ export default function App() {
     initAudio();
     setShowWeatherMenu(false);
     setRaceStarted(true);
-    controllerRef.current?.startRace(weather);
+    controllerRef.current?.startRace(weather, circuit);
   };
 
   const handleRestartWithWeather = (w: WeatherType) => {
@@ -331,7 +465,7 @@ export default function App() {
     setWeather(w);
     setShowWeatherMenu(false);
     setRaceStarted(true);
-    controllerRef.current?.restartWithWeather(w);
+    controllerRef.current?.restartWithWeather(w, circuit);
   };
 
   const activeWeatherOpt = WEATHER_OPTIONS.find((opt) => opt.id === weather) || WEATHER_OPTIONS[0];
@@ -355,7 +489,7 @@ export default function App() {
     };
     const nextRecords = sortAndTrimRecords([...records, newEntry]);
     setRecords(nextRecords);
-    saveStoredRecords(nextRecords);
+    saveStoredRecords(activeCircuit.recordsStorageKey, nextRecords);
     saveLastDriverName(cleaned);
     setDriverName(cleaned);
     setSavedRecordId(newEntry.id);
@@ -367,7 +501,7 @@ export default function App() {
     if (records.length === 0) {
       return (
         <div className="py-4 px-3 text-center text-[11px] font-semibold tracking-[0.14em] text-[#f2efe6]/55">
-          NO PODIUM RECORDS YET — FINISH TOP 3 TO SET A MONACO RECORD
+          NO PODIUM RECORDS YET — FINISH TOP 3 TO SET A {activeCircuit.gpTitle} RECORD
         </div>
       );
     }
@@ -421,7 +555,7 @@ export default function App() {
     return (
       <div className="fixed inset-0 grid place-items-center bg-[#0b0f16] text-[#f2efe6] p-6 text-center">
         <div className="max-w-md space-y-3">
-          <div className="text-2xl font-black italic tracking-wider text-[#e10600]">MONACO GP</div>
+          <div className="text-2xl font-black italic tracking-wider text-[#e10600]">{activeCircuit.gpTitle}</div>
           <p className="text-sm opacity-80">{webglError}</p>
         </div>
       </div>
@@ -433,16 +567,16 @@ export default function App() {
       <canvas
         ref={canvasRef}
         id="game-canvas"
-        aria-label="Monaco GP 3D race view"
+        aria-label={`${activeCircuit.gpTitle} 3D race view`}
       />
 
       {/* Boot / loading gate */}
       <div id="boot">
-        <div id="boot-mark">M</div>
-        <div id="boot-title">MONACO GP</div>
+        <div id="boot-mark">{activeCircuit.bootMark}</div>
+        <div id="boot-title">{activeCircuit.gpTitle}</div>
         <div id="boot-sub">STREET CIRCUIT CHALLENGE</div>
         <div id="boot-track"><div id="boot-bar" /></div>
-        <div id="boot-note">Building Circuit de Monaco…</div>
+        <div id="boot-note">{activeCircuit.bootNote}</div>
         <button id="boot-retry" onClick={() => window.location.reload()} hidden>
           RETRY
         </button>
@@ -457,12 +591,12 @@ export default function App() {
         <section id="tower" className="panel" aria-label="Live standings">
           <header className="panel-head">
             <span className="live-dot" aria-hidden="true" />
-            <span className="head-title">MONACO GP</span>
+            <span className="head-title">{activeCircuit.gpTitle}</span>
             <span className="live-tag">LIVE</span>
           </header>
           <div id="tower-rows" />
           <footer id="tower-foot">
-            CIRCUIT DE MONACO · <span id="tower-laps">3 LAPS</span>
+            {activeCircuit.circuitTitle} · <span id="tower-laps">3 LAPS</span>
           </footer>
         </section>
 
@@ -521,7 +655,7 @@ export default function App() {
             </div>
             <canvas id="minimap" />
             <div id="minimap-meta">
-              <span id="minimap-label">CIRCUIT DE MONACO - 3.34 KM</span>
+              <span id="minimap-label">{activeCircuit.circuitTitle} - {activeCircuit.lengthLabel}</span>
             </div>
           </section>
         ) : (
@@ -760,7 +894,7 @@ export default function App() {
                   <path d="M5 3h14v3h3v3c0 2.5-1.7 4.6-4 5.1-.8 1.8-2.4 3.1-4.5 3.6V20h3.5v2H7v-2h3.5v-2.3c-2.1-.5-3.7-1.8-4.5-3.6C3.7 13.6 2 11.5 2 9V6h3V3zm0 5H4v1c0 1.4.8 2.6 2 3.1V8zm14 0v4.1c1.2-.5 2-1.7 2-3.1V8h-2z" />
                 </svg>
                 <span className="text-xs font-black tracking-[0.22em] text-[#d8b24a]">
-                  CIRCUIT HALL OF FAME — TOP RECORDS
+                  {activeCircuit.gpTitle} HALL OF FAME — TOP RECORDS
                 </span>
               </div>
               <button
@@ -780,9 +914,9 @@ export default function App() {
       <div id="finish-modal" role="dialog" aria-modal="true" aria-labelledby="finish-title">
         <div id="finish-card" className="panel">
           <div id="confetti" aria-hidden="true" />
-          <div id="finish-kicker">CHEQUERED FLAG · MONACO GP</div>
+          <div id="finish-kicker">CHEQUERED FLAG · {activeCircuit.gpTitle}</div>
           <h1 id="finish-title">VICTORY</h1>
-          <div id="finish-sub">CIRCUIT DE MONACO · 3 LAPS</div>
+          <div id="finish-sub">{activeCircuit.circuitTitle} · 3 LAPS</div>
           <div id="podium" />
 
           {/* Podium Name Entry Form (only when playerPosition <= 3 and finished full race) */}
@@ -838,7 +972,7 @@ export default function App() {
           <div className="mt-3.5 rounded-lg border border-white/15 bg-[#070a10]/75 px-3 py-2.5 text-left">
             <div className="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-white/10">
               <span className="text-[10px] font-black tracking-[0.2em] text-[#d8b24a]">
-                CIRCUIT HALL OF FAME — TOP RECORDS
+                {activeCircuit.gpTitle} HALL OF FAME — TOP RECORDS
               </span>
               <span className="text-[9px] font-bold tracking-[0.14em] text-[#f2efe6]/50">
                 TOP {MAX_HALL_OF_FAME}
@@ -886,7 +1020,7 @@ export default function App() {
       {/* DNF · terminal car damage Game Over modal */}
       <div id="gameover-modal" role="dialog" aria-modal="true" aria-labelledby="gameover-title">
         <div id="gameover-card" className="panel">
-          <div id="gameover-kicker">TERMINAL CAR DAMAGE · MONACO GP</div>
+          <div id="gameover-kicker">TERMINAL CAR DAMAGE · {activeCircuit.gpTitle}</div>
           <h1 id="gameover-title">GAME OVER — DNF</h1>
           <div id="gameover-sub">CHASSIS INTEGRITY FAILED · RETIRED FROM RACE</div>
           <div id="dnf-stats">
@@ -939,79 +1073,158 @@ export default function App() {
         </div>
       </div>
 
-      {/* Start Screen · Weather & Track Conditions Selection */}
+      {/* Start Screen · Circuit & Weather Conditions Selection */}
       {!raceStarted && !webglError && (
         <div
           role="dialog"
           aria-modal="true"
           aria-labelledby="start-title"
-          className="fixed inset-0 z-30 flex items-center justify-center bg-gradient-to-b from-[#06090f]/75 via-[#06090f]/60 to-[#06090f]/82 backdrop-blur-[3px] p-4"
+          className="fixed inset-0 z-30 flex items-center justify-center bg-gradient-to-b from-[#06090f]/74 via-[#06090f]/58 to-[#06090f]/82 backdrop-blur-[3px] p-3 sm:p-4"
         >
-          <div className="w-full max-w-[780px] rounded-2xl bg-[#0b0f16]/90 border border-white/18 border-t-[3px] border-t-[#e10600] px-5 py-6 sm:px-7 sm:py-7 shadow-[0_28px_80px_rgba(0,0,0,0.75)] text-[#f2efe6]">
+          <div className="w-full max-w-[840px] max-h-[94vh] overflow-y-auto rounded-2xl bg-[#0b0f16]/92 border border-white/18 border-t-[3px] border-t-[#e10600] px-4 py-4 sm:px-6 sm:py-5 shadow-[0_28px_80px_rgba(0,0,0,0.78)] text-[#f2efe6]">
             <div className="text-center">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#e10600]/15 border border-[#e10600]/45 text-[10px] font-black tracking-[0.28em] text-[#ff6a55]">
-                CIRCUIT DE MONACO · 3 LAPS · 8 CARS
+              <div className="inline-flex items-center gap-2 px-3 py-0.5 rounded bg-[#e10600]/15 border border-[#e10600]/45 text-[10px] font-black tracking-[0.26em] text-[#ff6a55]">
+                {activeCircuit.circuitTitle} · {activeCircuit.lengthLabel} · 3 LAPS · 8 CARS
               </div>
               <h1
                 id="start-title"
-                className="mt-2.5 text-4xl sm:text-5xl font-black italic tracking-wide bg-gradient-to-r from-[#f2efe6] via-[#d8b24a] to-[#ff2d1a] bg-clip-text text-transparent"
+                className="mt-1.5 text-3xl sm:text-4xl font-black italic tracking-wide bg-gradient-to-r from-[#f2efe6] via-[#d8b24a] to-[#ff2d1a] bg-clip-text text-transparent"
               >
-                MONACO GP
+                {activeCircuit.gpTitle}
               </h1>
-              <p className="mt-1 text-xs font-bold tracking-[0.26em] text-[#00d2be] uppercase">
-                SELECT WEATHER CONDITIONS
-              </p>
             </div>
 
-            <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {WEATHER_OPTIONS.map((opt) => {
-                const selected = weather === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={(e) => {
-                      e.currentTarget.blur();
-                      handleSelectStartWeather(opt.id);
-                    }}
-                    aria-pressed={selected}
-                    className={`relative flex flex-col justify-between text-left rounded-xl border p-4 transition cursor-pointer ${
-                      selected
-                        ? opt.activeCardCls
-                        : 'border-white/15 bg-[#0e141e]/80 hover:border-white/35 hover:bg-[#131b28]/90'
-                    }`}
-                  >
-                    <div>
+            {/* 1 · SELECT CIRCUIT */}
+            <div className="mt-3.5">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <p className="text-[11px] font-black tracking-[0.24em] text-[#00d2be] uppercase">
+                  SELECT CIRCUIT
+                </p>
+                <span className="text-[10px] font-bold tracking-[0.14em] text-[#f2efe6]/50">
+                  2 STREET CIRCUITS
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {CIRCUIT_LIST.map((cCfg, idx) => {
+                  const selected = circuit === cCfg.id;
+                  const isSalatiga = cCfg.id === 'salatiga-gp';
+                  const activeCls = isSalatiga
+                    ? 'border-[#22ff88] bg-gradient-to-b from-[#22ff88]/16 via-[#0d1614]/92 to-[#0b0f16]/95 shadow-[0_0_26px_rgba(34,255,136,0.28)]'
+                    : 'border-[#00d2be] bg-gradient-to-b from-[#00d2be]/16 via-[#0c141d]/92 to-[#0b0f16]/95 shadow-[0_0_26px_rgba(0,210,190,0.28)]';
+                  const tagCls = isSalatiga
+                    ? 'bg-[#22ff88]/18 text-[#4ade80] border-[#22ff88]/45'
+                    : 'bg-[#00d2be]/18 text-[#5eead4] border-[#00d2be]/45';
+
+                  return (
+                    <button
+                      key={cCfg.id}
+                      type="button"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        handleSelectCircuit(cCfg.id);
+                      }}
+                      aria-pressed={selected}
+                      className={`group relative flex flex-col justify-between text-left rounded-xl border p-3.5 transition cursor-pointer ${
+                        selected
+                          ? activeCls
+                          : 'border-white/15 bg-[#0e141e]/82 hover:border-white/35 hover:bg-[#131b28]/92'
+                      }`}
+                    >
                       <div className="flex items-start justify-between gap-2">
-                        <div className={`p-2 rounded-lg bg-white/[0.06] border border-white/10 ${opt.iconColorCls}`}>
-                          <WeatherIcon type={opt.id} className="w-6 h-6" />
+                        <div>
+                          <div className="text-[10px] font-black tracking-[0.2em] text-[#f2efe6]/55">
+                            {idx + 1}. {cCfg.gpTitle}
+                          </div>
+                          <h2 className="text-sm sm:text-base font-black italic tracking-wide text-[#f2efe6]">
+                            {cCfg.circuitTitle}
+                          </h2>
                         </div>
-                        <span className={`px-2 py-0.5 rounded border text-[9px] font-black tracking-[0.12em] ${opt.badgeCls}`}>
-                          {opt.gripBadge}
+                        <span
+                          className={`shrink-0 px-2 py-0.5 rounded border text-[9px] font-black tracking-[0.12em] ${
+                            selected
+                              ? 'bg-[#22ff88]/20 text-[#22ff88] border-[#22ff88]/55'
+                              : tagCls
+                          }`}
+                        >
+                          {selected ? '✓ SELECTED' : cCfg.lengthLabel}
                         </span>
                       </div>
-                      <h2 className="mt-3 text-base font-black italic tracking-wide text-[#f2efe6]">
-                        {opt.label}
-                      </h2>
-                      <div className="text-[11px] font-bold tracking-[0.06em] text-[#00d2be]">
-                        {opt.subtitle}
-                      </div>
-                      <p className="mt-2 text-xs leading-relaxed text-[#f2efe6]/70">
-                        {opt.description}
-                      </p>
-                    </div>
 
-                    <div className="mt-3 pt-2.5 border-t border-white/10 flex items-center justify-between text-[10px] font-black tracking-[0.16em]">
-                      <span className={selected ? 'text-[#22ff88]' : 'text-[#f2efe6]/45'}>
-                        {selected ? '✓ SELECTED' : 'CLICK TO PREVIEW'}
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
+                      <div className="my-2 rounded-lg bg-[#06090f]/75 border border-white/10 px-2 py-1">
+                        <CircuitSvgMap config={cCfg} selected={selected} />
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/10">
+                        <span className="text-[11px] font-semibold tracking-[0.03em] text-[#f2efe6]/80">
+                          {cCfg.subtitle}
+                        </span>
+                        <span className={`shrink-0 text-[9px] font-black tracking-[0.14em] ${selected ? 'text-[#22ff88]' : 'text-[#f2efe6]/45'}`}>
+                          {selected ? 'PREVIEWING' : 'SELECT'}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
-            <div className="mt-5 flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-white/10">
+            {/* 2 · SELECT WEATHER CONDITIONS */}
+            <div className="mt-4">
+              <p className="text-[11px] font-black tracking-[0.24em] text-[#00d2be] uppercase mb-2">
+                SELECT WEATHER CONDITIONS
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                {WEATHER_OPTIONS.map((opt) => {
+                  const selected = weather === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        handleSelectStartWeather(opt.id);
+                      }}
+                      aria-pressed={selected}
+                      className={`relative flex flex-col justify-between text-left rounded-xl border p-3 transition cursor-pointer ${
+                        selected
+                          ? opt.activeCardCls
+                          : 'border-white/15 bg-[#0e141e]/80 hover:border-white/35 hover:bg-[#131b28]/90'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className={`p-1.5 rounded-lg bg-white/[0.06] border border-white/10 ${opt.iconColorCls}`}>
+                            <WeatherIcon type={opt.id} className="w-5 h-5" />
+                          </div>
+                          <span className={`px-2 py-0.5 rounded border text-[9px] font-black tracking-[0.12em] ${opt.badgeCls}`}>
+                            {opt.gripBadge}
+                          </span>
+                        </div>
+                        <h3 className="mt-2 text-sm font-black italic tracking-wide text-[#f2efe6]">
+                          {opt.label}
+                        </h3>
+                        <div className="text-[10px] font-bold tracking-[0.06em] text-[#00d2be]">
+                          {opt.subtitle}
+                        </div>
+                        <p className="mt-1 text-[11px] leading-snug text-[#f2efe6]/70">
+                          {opt.description}
+                        </p>
+                      </div>
+
+                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[9px] font-black tracking-[0.16em]">
+                        <span className={selected ? 'text-[#22ff88]' : 'text-[#f2efe6]/45'}>
+                          {selected ? '✓ SELECTED' : 'CLICK TO PREVIEW'}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3 pt-3.5 border-t border-white/10">
               <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-4 gap-y-1 text-[10px] font-bold tracking-[0.12em] text-[#f2efe6]/60">
                 <span><b className="text-[#f2efe6]">W/S</b> THROTTLE·BRAKE</span>
                 <span><b className="text-[#f2efe6]">A/D</b> STEER</span>
@@ -1024,7 +1237,7 @@ export default function App() {
                   e.currentTarget.blur();
                   handleStartRace();
                 }}
-                className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-[#ff2d1a] to-[#e10600] text-[#f2efe6] text-sm font-black tracking-[0.24em] shadow-[0_10px_32px_rgba(225,6,0,0.5)] hover:brightness-110 active:scale-95 transition cursor-pointer"
+                className="w-full sm:w-auto px-8 py-3 rounded-xl bg-gradient-to-r from-[#ff2d1a] to-[#e10600] text-[#f2efe6] text-sm font-black tracking-[0.24em] shadow-[0_10px_32px_rgba(225,6,0,0.5)] hover:brightness-110 active:scale-95 transition cursor-pointer"
               >
                 START RACE
               </button>

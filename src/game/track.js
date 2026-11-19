@@ -7,6 +7,8 @@
 // ============================================================================
 
 import * as THREE from 'three';
+import { getCircuitConfig } from '../data/circuits.ts';
+import { buildSalatigaEnvironment } from './salatigaWorld.js';
 
 const SCALE = 1.18;
 export const TRACK_POINTS = [
@@ -18,7 +20,6 @@ export const TRACK_POINTS = [
   [252, 0, 198], [204, 0, 178], [122, 0, 168],
 ].map((p) => new THREE.Vector3(p[0] * SCALE, p[1] * SCALE, p[2] * SCALE));
 
-const SAMPLE_COUNT = 1200;
 const HALF_WIDTH = 8.4;
 
 function axisVal(x0, x1, x2, x3, dt0, dt1, dt2, w) {
@@ -2050,11 +2051,20 @@ function createWaterMaterial() {
 }
 
 export function buildMonacoTrack(scene) {
-  const rawSteps = 2400;
+  return buildTrack(scene, 'monaco-gp');
+}
+
+export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
+  const cfg = getCircuitConfig(circuitId);
+  const isSalatiga = cfg.id === 'salatiga-gp';
+  const points = cfg.worldPoints.map((p) => new THREE.Vector3(p[0], p[1], p[2]));
+  const SAMPLE_COUNT = isSalatiga ? 1600 : 1200;
+
+  const rawSteps = isSalatiga ? 3200 : 2400;
   const rawPts = [];
   const rawCum = new Float32Array(rawSteps + 1);
   for (let i = 0; i <= rawSteps; i++) {
-    const p = evalCentripetal(TRACK_POINTS, i / rawSteps);
+    const p = evalCentripetal(points, i / rawSteps);
     rawPts.push(p);
     if (i > 0) rawCum[i] = rawCum[i - 1] + p.distanceTo(rawPts[i - 1]);
   }
@@ -2098,17 +2108,29 @@ export function buildMonacoTrack(scene) {
     return best / SAMPLE_COUNT;
   };
 
-  const startU = uAtPoint(TRACK_POINTS[2]);
-  const tunnelStart = uAtPoint(TRACK_POINTS[19]) - 0.006;
-  const tunnelEnd = uAtPoint(TRACK_POINTS[21]) + 0.006;
+  const startU = uAtPoint(points[cfg.startIndex]);
+  const tunnelStart = cfg.tunnelPointPair ? uAtPoint(points[cfg.tunnelPointPair[0]]) - 0.006 : -1;
+  const tunnelEnd = cfg.tunnelPointPair ? uAtPoint(points[cfg.tunnelPointPair[1]]) + 0.006 : -1;
+  const hasTunnel = tunnelStart >= 0 && tunnelEnd > tunnelStart;
 
-  const drsZones = [
-    { uStart: 0.012, uEnd: uAtPoint(TRACK_POINTS[3]) - 0.012 },
-    { uStart: uAtPoint(TRACK_POINTS[21]) + 0.012, uEnd: uAtPoint(TRACK_POINTS[23]) - 0.008 },
-  ];
+  const drsZones = isSalatiga
+    ? cfg.drsPointPairs.map(([aIdx, bIdx]) => {
+        const ua = uAtPoint(points[aIdx]) + 0.008;
+        const ub = uAtPoint(points[bIdx]) - 0.008;
+        return { uStart: Math.min(ua, ub), uEnd: Math.max(ua, ub) };
+      })
+    : [
+        { uStart: 0.012, uEnd: uAtPoint(points[3]) - 0.012 },
+        { uStart: uAtPoint(points[21]) + 0.012, uEnd: uAtPoint(points[23]) - 0.008 },
+      ];
 
-  // Track surface & curbs
+  // Track surface & curbs (scale UV repeats with track length for consistent texture density)
   const asphaltTex = makeAsphaltTextures();
+  const asphaltRepeatY = Math.max(200, Math.round(totalLength / 11.2));
+  asphaltTex.map.repeat.set(1, asphaltRepeatY);
+  asphaltTex.roughnessMap.repeat.set(1, asphaltRepeatY);
+  asphaltTex.bumpMap.repeat.set(1, asphaltRepeatY);
+
   const asphaltMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     map: asphaltTex.map,
@@ -2121,8 +2143,10 @@ export function buildMonacoTrack(scene) {
   });
   scene.add(buildRibbon(samples, -HALF_WIDTH, HALF_WIDTH, 0.0, asphaltMat));
 
+  const curbTex = makeCurbTexture();
+  curbTex.repeat.set(1, Math.max(280, Math.round(totalLength / 8.6)));
   const curbMat = new THREE.MeshStandardMaterial({
-    map: makeCurbTexture(),
+    map: curbTex,
     roughness: 0.65,
     metalness: 0.04,
     envMapIntensity: 0.65,
@@ -2132,6 +2156,10 @@ export function buildMonacoTrack(scene) {
 
   // Safety barriers: Triple-Beam Corrugated Armco Steel Guardrails
   const armcoTex = makeArmcoTextures();
+  const armcoRepeatX = Math.max(300, Math.round(totalLength / 8.2));
+  armcoTex.map.repeat.set(armcoRepeatX, 1);
+  armcoTex.bumpMap.repeat.set(armcoRepeatX, 1);
+  armcoTex.roughnessMap.repeat.set(armcoRepeatX, 1);
   const barrierMat = new THREE.MeshStandardMaterial({
     map: armcoTex.map,
     bumpMap: armcoTex.bumpMap,
@@ -2143,12 +2171,65 @@ export function buildMonacoTrack(scene) {
   scene.add(buildWallRibbon(samples, -HALF_WIDTH - 1.15, 1.15, 0.45, barrierMat));
   scene.add(buildWallRibbon(samples, HALF_WIDTH + 1.15, 1.15, 0.45, barrierMat));
 
-  // Vertical Steel I-Beam Support Posts every 2.5m (single InstancedMesh)
+  if (isSalatiga) {
+    // Solid roadbed shoulder & sloped embankment skirts so elevated JLS sections never float or clip
+    const shoulderMat = new THREE.MeshStandardMaterial({
+      color: 0x3b424b,
+      roughness: 0.88,
+      metalness: 0.04,
+    });
+    const embankMat = new THREE.MeshStandardMaterial({
+      color: 0x3a5634,
+      roughness: 0.94,
+      metalness: 0.0,
+    });
+    scene.add(buildRibbon(samples, -HALF_WIDTH - 2.1, HALF_WIDTH + 2.1, -0.055, shoulderMat));
+
+    const buildEmbankmentSkirt = (innerOff, outerOff, topBias, botBias) => {
+      const N = samples.count;
+      const positions = new Float32Array((N + 1) * 2 * 3);
+      const uvs = new Float32Array((N + 1) * 2 * 2);
+      const indices = [];
+      for (let i = 0; i <= N; i++) {
+        const idx = i % N;
+        const p = samples.pos[idx];
+        const r = samples.right[idx];
+        const vCoord = i / N;
+        const base = i * 6;
+        positions[base] = p.x + r.x * innerOff;
+        positions[base + 1] = p.y + topBias;
+        positions[base + 2] = p.z + r.z * innerOff;
+        positions[base + 3] = p.x + r.x * outerOff;
+        positions[base + 4] = p.y + botBias;
+        positions[base + 5] = p.z + r.z * outerOff;
+        const uvBase = i * 4;
+        uvs[uvBase] = 0; uvs[uvBase + 1] = vCoord;
+        uvs[uvBase + 2] = 1; uvs[uvBase + 3] = vCoord;
+        if (i < N) {
+          const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+          if (outerOff > innerOff) indices.push(a, b, c, b, d, c);
+          else indices.push(a, c, b, b, c, d);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+      const m = new THREE.Mesh(geo, embankMat);
+      m.receiveShadow = true;
+      return m;
+    };
+    scene.add(buildEmbankmentSkirt(-HALF_WIDTH - 2.0, -HALF_WIDTH - 9.5, -0.06, -5.8));
+    scene.add(buildEmbankmentSkirt(HALF_WIDTH + 2.0, HALF_WIDTH + 9.5, -0.06, -5.8));
+  }
+
+  // Vertical Steel I-Beam Support Posts (single InstancedMesh)
   const postDummy = new THREE.Object3D();
   const iBeamSpecs = [];
-  const postStepU = 2.5 / totalLength;
+  const postStepU = (isSalatiga ? 4.2 : 2.5) / totalLength;
   for (let u = 0; u < 1; u += postStepU) {
-    if (u >= tunnelStart && u <= tunnelEnd) continue;
+    if (hasTunnel && u >= tunnelStart && u <= tunnelEnd) continue;
     const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
     const p = pos[idx];
     const r = right[idx];
@@ -2182,7 +2263,7 @@ export function buildMonacoTrack(scene) {
     scene.add(iBeamIM);
   }
 
-  // FIA Catch-Fencing & Cranked Steel Fence Poles along Spectator & Harbor Sections
+  // FIA Catch-Fencing & Cranked Steel Fence Poles along Spectator & Boulevard Sections
   const fenceTex = makeCatchFenceTextures();
   const catchFenceMat = new THREE.MeshStandardMaterial({
     map: fenceTex.map,
@@ -2194,14 +2275,19 @@ export function buildMonacoTrack(scene) {
     metalness: 0.7,
     side: THREE.DoubleSide,
   });
-  const catchFenceZones = [
-    { uStart: 0.0, uEnd: 0.145, sides: [-1, 1] },
-    { uStart: 0.20, uEnd: 0.36, sides: [-1, 1] },
-    { uStart: Math.min(0.88, tunnelEnd + 0.008), uEnd: 0.895, sides: [-1, 1] },
-    { uStart: 0.895, uEnd: 1.0, sides: [-1, 1] },
-  ];
+  const catchFenceZones = isSalatiga
+    ? [
+        { uStart: Math.max(0, startU - 0.03), uEnd: Math.min(1, startU + 0.07), sides: [-1, 1] },
+        { uStart: 0.65, uEnd: 0.85, sides: [-1, 1] },
+      ]
+    : [
+        { uStart: 0.0, uEnd: 0.145, sides: [-1, 1] },
+        { uStart: 0.20, uEnd: 0.36, sides: [-1, 1] },
+        { uStart: Math.min(0.88, tunnelEnd + 0.008), uEnd: 0.895, sides: [-1, 1] },
+        { uStart: 0.895, uEnd: 1.0, sides: [-1, 1] },
+      ];
   const fencePoleSpecs = [];
-  const fencePoleStepU = 5.0 / totalLength;
+  const fencePoleStepU = 5.5 / totalLength;
   for (const zone of catchFenceZones) {
     for (const side of zone.sides) {
       const fenceMesh = buildCatchFenceRibbon(
@@ -2248,17 +2334,25 @@ export function buildMonacoTrack(scene) {
   }
 
   // Cushioned Tecpro Impact Barriers at Sharp Corner Run-Offs (InstancedMesh)
-  const tecproCorners = [
-    { u: uAtPoint(TRACK_POINTS[4]), side: -1, count: 6, blueTheme: false }, // Sainte-Devote
-    { u: uAtPoint(TRACK_POINTS[9]), side: -1, count: 5, blueTheme: true },  // Casino Square
-    { u: uAtPoint(TRACK_POINTS[12]), side: -1, count: 5, blueTheme: false }, // Mirabeau
-    { u: uAtPoint(TRACK_POINTS[15]), side: -1, count: 6, blueTheme: true },  // Fairmont Hairpin
-    { u: uAtPoint(TRACK_POINTS[23]), side: -1, count: 7, blueTheme: false }, // Nouvelle Chicane entry
-    { u: uAtPoint(TRACK_POINTS[24]), side: 1, count: 5, blueTheme: true },   // Nouvelle Chicane harbor wall
-    { u: uAtPoint(TRACK_POINTS[27]), side: -1, count: 6, blueTheme: false }, // Piscine
-    { u: uAtPoint(TRACK_POINTS[31]), side: -1, count: 6, blueTheme: false }, // La Rascasse
-    { u: uAtPoint(TRACK_POINTS[33]), side: -1, count: 5, blueTheme: true },  // Anthony Noghes
-  ];
+  const tecproCorners = isSalatiga
+    ? [
+        { u: uAtPoint(points[3]), side: 1, count: 6, blueTheme: false },
+        { u: uAtPoint(points[11]), side: 1, count: 6, blueTheme: true },
+        { u: uAtPoint(points[12]), side: -1, count: 5, blueTheme: false },
+        { u: uAtPoint(points[17]), side: 1, count: 6, blueTheme: true },
+        { u: uAtPoint(points[0]), side: 1, count: 6, blueTheme: false },
+      ]
+    : [
+        { u: uAtPoint(points[4]), side: -1, count: 6, blueTheme: false },
+        { u: uAtPoint(points[9]), side: -1, count: 5, blueTheme: true },
+        { u: uAtPoint(points[12]), side: -1, count: 5, blueTheme: false },
+        { u: uAtPoint(points[15]), side: -1, count: 6, blueTheme: true },
+        { u: uAtPoint(points[23]), side: -1, count: 7, blueTheme: false },
+        { u: uAtPoint(points[24]), side: 1, count: 5, blueTheme: true },
+        { u: uAtPoint(points[27]), side: -1, count: 6, blueTheme: false },
+        { u: uAtPoint(points[31]), side: -1, count: 6, blueTheme: false },
+        { u: uAtPoint(points[33]), side: -1, count: 5, blueTheme: true },
+      ];
   const tecproSpecs = [];
   const blockStepU = 2.2 / totalLength;
   for (const tc of tecproCorners) {
@@ -2304,18 +2398,25 @@ export function buildMonacoTrack(scene) {
   }
 
   // Marshal Braking Distance Marker Boards (150, 100, 50m before major corners)
-  const brakingZones = [
-    { cornerU: uAtPoint(TRACK_POINTS[4]), side: -1 },  // Into Sainte-Devote
-    { cornerU: uAtPoint(TRACK_POINTS[12]), side: -1 }, // Into Mirabeau
-    { cornerU: uAtPoint(TRACK_POINTS[23]), side: -1 }, // Into Nouvelle Chicane
-    { cornerU: uAtPoint(TRACK_POINTS[31]), side: -1 }, // Into La Rascasse
-  ];
+  const brakingZones = isSalatiga
+    ? [
+        { cornerU: uAtPoint(points[3]), side: -1 },
+        { cornerU: uAtPoint(points[11]), side: -1 },
+        { cornerU: uAtPoint(points[17]), side: -1 },
+        { cornerU: uAtPoint(points[0]), side: -1 },
+      ]
+    : [
+        { cornerU: uAtPoint(points[4]), side: -1 },
+        { cornerU: uAtPoint(points[12]), side: -1 },
+        { cornerU: uAtPoint(points[23]), side: -1 },
+        { cornerU: uAtPoint(points[31]), side: -1 },
+      ];
   const distBoardBuckets = { '150': [], '100': [], '50': [] };
   const boardPostSpecs = [];
   for (const bz of brakingZones) {
     for (const [label, metersBack] of [['150', 150], ['100', 100], ['50', 50]]) {
       const u = ((bz.cornerU - metersBack / totalLength) % 1 + 1) % 1;
-      if (u >= tunnelStart && u <= tunnelEnd) continue;
+      if (hasTunnel && u >= tunnelStart && u <= tunnelEnd) continue;
       const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
       const p = pos[idx];
       const r = right[idx];
@@ -2419,7 +2520,9 @@ export function buildMonacoTrack(scene) {
   sfStrip.receiveShadow = true;
   scene.add(sfStrip);
 
-  // Painted starting grid boxes (slots 0..7)
+  // Painted starting grid boxes (slots 0..7) using metric grid spacing
+  const poleLeadU = Math.min(0.004, 12.0 / totalLength);
+  const gridStepU = Math.min(0.0035, 10.5 / totalLength);
   const gridMat = new THREE.MeshBasicMaterial({
     color: 0xf2efe6,
     transparent: true,
@@ -2428,7 +2531,7 @@ export function buildMonacoTrack(scene) {
     polygonOffsetFactor: -1,
   });
   for (let slot = 0; slot < 8; slot++) {
-    const gu = (startU - 0.004 - slot * 0.0035 + 1) % 1;
+    const gu = (startU - poleLeadU - slot * gridStepU + 1) % 1;
     const gIdx = Math.round(gu * SAMPLE_COUNT) % SAMPLE_COUNT;
     const gp = pos[gIdx];
     const gr = right[gIdx];
@@ -2511,10 +2614,9 @@ export function buildMonacoTrack(scene) {
   scene.add(gantryGroup);
 
   // Secondary Overhead Track Sponsor Bridges (TOP COOL)
-  const secondaryBridgeUs = [
-    uAtPoint(TRACK_POINTS[7]),  // Beau Rivage climb into Casino Square
-    uAtPoint(TRACK_POINTS[26]), // Port Hercule harbor straight
-  ];
+  const secondaryBridgeUs = isSalatiga
+    ? [uAtPoint(points[8]), uAtPoint(points[13])]
+    : [uAtPoint(points[7]), uAtPoint(points[26])];
   for (const bu of secondaryBridgeUs) {
     const bIdx = Math.round(bu * SAMPLE_COUNT) % SAMPLE_COUNT;
     const bp = pos[bIdx];
@@ -2536,6 +2638,1130 @@ export function buildMonacoTrack(scene) {
     scene.add(bridgeGroup);
   }
 
+  // Track clearance helper & shared GPU animation uniforms
+  const nearestSample = (x, z) => {
+    let best = 0;
+    let bd = Infinity;
+    for (let k = 0; k < SAMPLE_COUNT; k += 4) {
+      const dx = x - pos[k].x;
+      const dz = z - pos[k].z;
+      const d = dx * dx + dz * dz;
+      if (d < bd) {
+        bd = d;
+        best = k;
+      }
+    }
+    return { idx: best, distSq: bd };
+  };
+  const dummy = new THREE.Object3D();
+  const envTime = { value: 0 };
+  const playerPosUniform = { value: new THREE.Vector3() };
+
+  // Shared Grandstand & Sponsor Banner Builders
+  const gsSteelMat = new THREE.MeshStandardMaterial({ color: 0x27303d, metalness: 0.65, roughness: 0.4 });
+  const gsConcreteMat = new THREE.MeshStandardMaterial({ color: 0x737982, roughness: 0.85 });
+  const gsCanopyMat = new THREE.MeshStandardMaterial({ color: 0xf4f0e6, roughness: 0.5, side: THREE.DoubleSide });
+  const topCoolFasciaTex = topCoolTex.clone();
+  topCoolFasciaTex.wrapS = THREE.RepeatWrapping;
+  topCoolFasciaTex.repeat.set(3, 1);
+  topCoolFasciaTex.needsUpdate = true;
+  const esLumutFasciaTex = esLumutTex.clone();
+  esLumutFasciaTex.wrapS = THREE.RepeatWrapping;
+  esLumutFasciaTex.repeat.set(3, 1);
+  esLumutFasciaTex.needsUpdate = true;
+  const gsTrimMat = new THREE.MeshStandardMaterial({ color: 0x161a23, roughness: 0.45 });
+  const topCoolFasciaFace = new THREE.MeshStandardMaterial({ map: topCoolFasciaTex, roughness: 0.38, metalness: 0.12 });
+  const esLumutFasciaFace = new THREE.MeshStandardMaterial({ map: esLumutFasciaTex, roughness: 0.38, metalness: 0.1 });
+  const topCoolFasciaMats = [gsTrimMat, gsTrimMat, gsTrimMat, gsTrimMat, topCoolFasciaFace, topCoolFasciaFace];
+  const esLumutFasciaMats = [gsTrimMat, gsTrimMat, gsTrimMat, gsTrimMat, esLumutFasciaFace, esLumutFasciaFace];
+
+  const spawnBanners = (specs, mats) => {
+    if (!specs.length) return;
+    const bGeo = new THREE.BoxGeometry(6.8, 1.35, 0.14);
+    const im = new THREE.InstancedMesh(bGeo, mats, specs.length);
+    im.castShadow = true;
+    specs.forEach((b, i) => {
+      dummy.position.set(b.x, b.y, b.z);
+      dummy.rotation.set(0, b.yaw, 0);
+      dummy.scale.set(1, b.elevated ? 1.15 : 0.88, 1);
+      dummy.updateMatrix();
+      im.setMatrixAt(i, dummy.matrix);
+    });
+    im.instanceMatrix.needsUpdate = true;
+    im.computeBoundingSphere();
+    scene.add(im);
+  };
+
+  let waterMaterial = null;
+  let mountainMistUniform = null;
+
+  if (isSalatiga) {
+    // ------------------------------------------------------------------------
+    // Trackside Hero Landmarks for Salatiga GP (Pasar Raya II, Bundaran
+    // Tamansari & Tugu Jam, Rumah Dinas Wali Kota, Gerbang Kampus UKSW)
+    // Positioned cleanly just outside Armco (road edge + 14m..18m), angled
+    // toward oncoming traffic, with hi-res CanvasTexture signage (anisotropy=16)
+    // ------------------------------------------------------------------------
+    const buildSalatigaHeroLandmarks = () => {
+      const heroClearZones = [];
+      const makeHiResTex = (w, h, drawFn, repeatX = 1, repeatY = 1) => {
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        const g = c.getContext('2d');
+        drawFn(g, w, h);
+        const tex = new THREE.CanvasTexture(c);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = 16;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        if (repeatX !== 1 || repeatY !== 1) {
+          tex.wrapS = THREE.RepeatWrapping;
+          tex.wrapT = THREE.RepeatWrapping;
+          tex.repeat.set(repeatX, repeatY);
+        }
+        return tex;
+      };
+
+      const getHeroGroundY = (x, z) => {
+        const near = nearestSample(x, z);
+        const dist = Math.sqrt(near.distSq);
+        const trackY = pos[near.idx].y - 0.65;
+        if (dist <= 32) return trackY;
+        const southSlope = THREE.MathUtils.clamp((z + 750) / 1700, 0, 1.3) * 34;
+        const westRidge = THREE.MathUtils.clamp((-x + 250) / 1400, 0, 1.2) * 14;
+        const hills =
+          Math.sin(x * 0.0032 + 0.6) * Math.cos(z * 0.0029) * 8.5 +
+          Math.sin(x * 0.0085 - z * 0.0062) * 3.8;
+        const farRise = Math.max(0, Math.hypot(x, z) - 980) * 0.045;
+        const baseY = -4 + southSlope + westRidge + hills + farRise;
+        if (dist >= 150) return baseY;
+        const sm = THREE.MathUtils.smoothstep((dist - 32) / 118, 0, 1);
+        const lerpY = THREE.MathUtils.lerp(trackY, baseY, sm);
+        return dist < 76 ? Math.min(lerpY, trackY + (dist - 32) * 0.24) : lerpY;
+      };
+
+      const snapHeroSpot = (prog, side, centerDist, angleBias = 0.20) => {
+        const u = ((startU + prog) % 1 + 1) % 1;
+        const idx = Math.round(u * SAMPLE_COUNT) % SAMPLE_COUNT;
+        const p = pos[idx];
+        const r = right[idx];
+        const t = tan[idx];
+        const x = p.x + r.x * side * centerDist;
+        const z = p.z + r.z * side * centerDist;
+        const y = getHeroGroundY(x, z);
+        const wallYaw = Math.atan2(-side * r.x, -side * r.z);
+        const driverYaw = Math.atan2(-t.x, -t.z);
+        const dYaw = Math.atan2(Math.sin(driverYaw - wallYaw), Math.cos(driverYaw - wallYaw));
+        return { x, y, z, yaw: wallYaw + dYaw * angleBias, u };
+      };
+
+      const enableShadows = (obj, cast = true, receive = true) => {
+        obj.traverse((ch) => {
+          if (ch.isMesh) {
+            ch.castShadow = cast;
+            ch.receiveShadow = receive;
+          }
+        });
+      };
+
+      const gentengTex = makeHiResTex(512, 512, (g, w, h) => {
+        g.fillStyle = '#9e3b20';
+        g.fillRect(0, 0, w, h);
+        for (let row = 0; row < h; row += 24) {
+          g.fillStyle = 'rgba(42, 12, 6, 0.42)';
+          g.fillRect(0, row + 18, w, 6);
+          g.fillStyle = 'rgba(235, 132, 90, 0.18)';
+          g.fillRect(0, row, w, 4);
+          for (let col = 0; col < w; col += 24) {
+            const shade = ((col + row) / 24) % 2 === 0 ? 'rgba(255,190,145,0.09)' : 'rgba(50,14,8,0.12)';
+            g.fillStyle = shade;
+            g.fillRect(col + 2, row + 3, 20, 15);
+          }
+        }
+      }, 4, 3);
+      const heroRoofTileMat = new THREE.MeshStandardMaterial({
+        map: gentengTex,
+        roughness: 0.72,
+        metalness: 0.04,
+      });
+
+      // ----------------------------------------------------------------------
+      // HERO 1: PASAR RAYA II SALATIGA (Jl. Jend. Sudirman, prog ~0.708, side 1)
+      // Front arcade & forecourt ~14m–16m outside road edge, building 42x14x24
+      // ----------------------------------------------------------------------
+      {
+        const spot = snapHeroSpot(0.708, 1, 36.8, 0.16);
+        heroClearZones.push({ x: spot.x, z: spot.z, radSq: 44 * 44, uProg: 0.708, side: 1 });
+
+        const pasar = new THREE.Group();
+        pasar.position.set(spot.x, spot.y, spot.z);
+        pasar.rotation.y = spot.yaw;
+
+        const concreteTex = makeHiResTex(512, 512, (g, w, h) => {
+          g.fillStyle = '#ddd6c7';
+          g.fillRect(0, 0, w, h);
+          for (let i = 0; i < 1800; i++) {
+            g.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.06)' : 'rgba(45,40,35,0.06)';
+            g.fillRect((i * 73) % w, (i * 139) % h, 4, 4);
+          }
+          g.strokeStyle = 'rgba(110,98,84,0.28)';
+          g.lineWidth = 3;
+          for (let y = 0; y <= h; y += 64) {
+            g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+          }
+        }, 3, 2);
+
+        const marketFacadeTex = makeHiResTex(1024, 512, (g, w, h) => {
+          // Warm cream & terracotta Indonesian market facade
+          g.fillStyle = '#e5dccb';
+          g.fillRect(0, 0, w, h);
+          // Upper parapet & floor slab bands
+          g.fillStyle = '#b4482a';
+          g.fillRect(0, 0, w, 46);
+          g.fillStyle = '#993a20';
+          g.fillRect(0, 178, w, 24);
+          g.fillRect(0, 326, w, 24);
+          // Dark crimson fascia band above arcade
+          g.fillStyle = '#7f1d1d';
+          g.fillRect(0, 344, w, 26);
+
+          // 8 Structural commercial bays with recessed louvers & shopfronts
+          const bays = 8;
+          const bayW = w / bays;
+          for (let b = 0; b < bays; b++) {
+            const bx = b * bayW;
+            // Structural pier
+            g.fillStyle = '#cbbfa8';
+            g.fillRect(bx, 46, 18, h - 46);
+            g.fillStyle = '#b4482a';
+            g.fillRect(bx + 2, 46, 14, 132);
+
+            // 3rd floor louvered ventilation windows
+            g.fillStyle = '#253545';
+            g.fillRect(bx + 26, 66, bayW - 42, 92);
+            g.fillStyle = '#5f8ea8';
+            for (let lx = 0; lx < 3; lx++) {
+              g.fillRect(bx + 32 + lx * 26, 74, 18, 76);
+            }
+            // Horizontal louver slats
+            g.fillStyle = '#1e293b';
+            for (let sy = 84; sy < 146; sy += 14) {
+              g.fillRect(bx + 28, sy, bayW - 46, 3);
+            }
+
+            // 2nd floor recessed market gallery
+            g.fillStyle = '#1f2937';
+            g.fillRect(bx + 26, 214, bayW - 42, 96);
+            g.fillStyle = 'rgba(255, 218, 150, 0.45)';
+            g.fillRect(bx + 32, 222, (bayW - 60) * 0.48, 80);
+            g.fillRect(bx + 32 + (bayW - 54) * 0.52, 222, (bayW - 60) * 0.48, 80);
+
+            // Ground floor recessed bustling shopfront arcade
+            g.fillStyle = '#111827';
+            g.fillRect(bx + 22, 372, bayW - 34, 140);
+            g.fillStyle = b % 2 === 0 ? '#f59e0b' : '#0ea5e9';
+            g.fillRect(bx + 26, 376, bayW - 42, 18);
+            g.fillStyle = 'rgba(255, 226, 165, 0.78)';
+            g.fillRect(bx + 28, 404, bayW - 46, 98);
+          }
+        });
+
+        const signPasarTex = makeHiResTex(1024, 256, (g, w, h) => {
+          const grad = g.createLinearGradient(0, 0, w, h);
+          grad.addColorStop(0, '#7f1d1d');
+          grad.addColorStop(0.5, '#991b1b');
+          grad.addColorStop(1, '#7f1d1d');
+          g.fillStyle = grad;
+          g.fillRect(0, 0, w, h);
+          // Gold double architectural frame
+          g.strokeStyle = '#facc15';
+          g.lineWidth = 10;
+          g.strokeRect(10, 10, w - 20, h - 20);
+          g.strokeStyle = 'rgba(255,255,255,0.45)';
+          g.lineWidth = 3;
+          g.strokeRect(22, 22, w - 44, h - 44);
+          // Bold headline
+          g.fillStyle = '#ffffff';
+          g.font = '900 108px "Titillium Web", Impact, sans-serif';
+          g.textAlign = 'center';
+          g.textBaseline = 'middle';
+          g.fillText('PASAR RAYA II', w / 2, h * 0.43);
+          // Gold subtitle bar
+          g.fillStyle = '#fde047';
+          g.font = '700 34px "Titillium Web", sans-serif';
+          g.fillText('PUSAT PERBELANJAAN KOTA SALATIGA', w / 2, h * 0.78);
+        });
+
+        const plinthMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.88 });
+        const terracottaColMat = new THREE.MeshStandardMaterial({ color: 0xb4482a, roughness: 0.7 });
+        const creamMat = new THREE.MeshStandardMaterial({ map: concreteTex, roughness: 0.76 });
+        const facadeMat = new THREE.MeshStandardMaterial({ map: marketFacadeTex, roughness: 0.68, metalness: 0.06 });
+        const arcadeGlowMat = new THREE.MeshStandardMaterial({
+          color: 0xfef3c7,
+          emissive: 0xf59e0b,
+          emissiveIntensity: 0.55,
+          roughness: 0.35,
+        });
+        const signMat = new THREE.MeshStandardMaterial({
+          map: signPasarTex,
+          emissiveMap: signPasarTex,
+          emissive: 0xffffff,
+          emissiveIntensity: 0.58,
+          roughness: 0.3,
+        });
+        const signBackMat = new THREE.MeshStandardMaterial({ color: 0x262930, roughness: 0.55, metalness: 0.4 });
+        const signMats = [signBackMat, signBackMat, signBackMat, signBackMat, signMat, signBackMat];
+
+        // Deep foundation & forecourt apron
+        const plinth = new THREE.Mesh(new THREE.BoxGeometry(46, 4.6, 36), plinthMat);
+        plinth.position.set(0, -2.15, 2.5);
+        const forecourt = new THREE.Mesh(
+          new THREE.BoxGeometry(45, 0.3, 12),
+          new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.88 })
+        );
+        forecourt.position.set(0, 0.16, 14.5);
+
+        // Main 42m x 13.8m x 24m complex
+        const mainBlock = new THREE.Mesh(new THREE.BoxGeometry(42, 13.6, 24), facadeMat);
+        mainBlock.position.set(0, 7.0, 0);
+
+        // Tiered concrete/terracotta facade columns along road-facing frontage
+        for (let cx = -19.5; cx <= 19.5; cx += 6.5) {
+          const pier = new THREE.Mesh(new THREE.BoxGeometry(1.3, 14.1, 1.5), terracottaColMat);
+          pier.position.set(cx, 7.25, 12.15);
+          const cap = new THREE.Mesh(new THREE.BoxGeometry(1.75, 0.65, 1.9), creamMat);
+          cap.position.set(cx, 14.3, 12.15);
+          pasar.add(pier, cap);
+        }
+
+        // Recessed shopfront arcade canopy & glowing soffit
+        const arcadeCanopy = new THREE.Mesh(new THREE.BoxGeometry(43.2, 0.55, 3.6), creamMat);
+        arcadeCanopy.position.set(0, 4.45, 13.4);
+        const canopyTrim = new THREE.Mesh(new THREE.BoxGeometry(43.4, 0.42, 0.35), terracottaColMat);
+        canopyTrim.position.set(0, 4.45, 15.15);
+        const soffitStrip = new THREE.Mesh(new THREE.BoxGeometry(40.5, 0.14, 1.6), arcadeGlowMat);
+        soffitStrip.position.set(0, 4.14, 13.3);
+
+        // Stepped rooftop parapet, central glazed skylight atrium & 6 cooling HVAC units
+        const parapet = new THREE.Mesh(new THREE.BoxGeometry(42.8, 1.2, 24.8), creamMat);
+        parapet.position.set(0, 14.2, 0);
+        const roofDeck = new THREE.Mesh(
+          new THREE.BoxGeometry(41.2, 0.4, 23.2),
+          new THREE.MeshStandardMaterial({ color: 0x374151, roughness: 0.85 })
+        );
+        roofDeck.position.set(0, 14.0, 0);
+
+        const skylightBase = new THREE.Mesh(
+          new THREE.BoxGeometry(16, 1.8, 10),
+          new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.2, metalness: 0.45 })
+        );
+        skylightBase.position.set(0, 15.0, -1.5);
+        const skylightRoof = new THREE.Mesh(
+          new THREE.ConeGeometry(8.5, 2.4, 4),
+          new THREE.MeshStandardMaterial({ color: 0x7dd3fc, roughness: 0.18, metalness: 0.35 })
+        );
+        skylightRoof.rotation.y = Math.PI / 4;
+        skylightRoof.scale.set(1.35, 1.0, 0.85);
+        skylightRoof.position.set(0, 17.0, -1.5);
+
+        const hvacBodyMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.52, metalness: 0.35 });
+        const hvacFanMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.6, metalness: 0.5 });
+        for (const hx of [-15, -10.5, 10.5, 15]) {
+          for (const hz of [-5.5, 3.5]) {
+            const hvac = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.45, 2.4), hvacBodyMat);
+            hvac.position.set(hx, 14.9, hz);
+            const fan = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.25, 12), hvacFanMat);
+            fan.position.set(hx, 15.68, hz);
+            pasar.add(hvac, fan);
+          }
+        }
+
+        // Bold Illuminated Rooftop Signboard ("PASAR RAYA II") + Lower Facade Marquee
+        const rooftopSign = new THREE.Mesh(new THREE.BoxGeometry(26, 4.2, 0.65), signMats);
+        rooftopSign.position.set(0, 16.9, 11.4);
+        for (const sx of [-10, 0, 10]) {
+          const strut = new THREE.Mesh(new THREE.BoxGeometry(0.45, 3.4, 0.55), signBackMat);
+          strut.position.set(sx, 15.3, 11.2);
+          pasar.add(strut);
+        }
+        const facadeMarquee = new THREE.Mesh(new THREE.BoxGeometry(19.5, 2.7, 0.5), signMats);
+        facadeMarquee.position.set(0, 6.2, 12.65);
+
+        // Bustling market canopies (tenda) & parked cars in front forecourt
+        const tendaColors = [0xdc2626, 0x0284c7, 0x059669, 0xd97706];
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0xd1d5db, metalness: 0.6, roughness: 0.35 });
+        tendaColors.forEach((col, ti) => {
+          const tx = -14.5 + ti * 9.6;
+          const tz = 15.4;
+          const tendaRoof = new THREE.Mesh(
+            new THREE.ConeGeometry(2.9, 1.3, 4),
+            new THREE.MeshStandardMaterial({ color: col, roughness: 0.65 })
+          );
+          tendaRoof.rotation.y = Math.PI / 4;
+          tendaRoof.position.set(tx, 3.25, tz);
+          const stallCounter = new THREE.Mesh(
+            new THREE.BoxGeometry(3.4, 1.0, 1.8),
+            new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.8 })
+          );
+          stallCounter.position.set(tx, 0.7, tz);
+          for (const px of [-1.6, 1.6]) {
+            for (const pz of [-1.4, 1.4]) {
+              const pMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.5, 6), poleMat);
+              pMesh.position.set(tx + px, 1.45, tz + pz);
+              pasar.add(pMesh);
+            }
+          }
+          pasar.add(tendaRoof, stallCounter);
+        });
+
+        const carPalette = [0xf8fafc, 0x1e293b, 0xdc2626, 0x94a3b8, 0x2563eb, 0xeab308];
+        const tireMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.85 });
+        const glassCarMat = new THREE.MeshStandardMaterial({ color: 0x1e3a5f, roughness: 0.18, metalness: 0.5 });
+        carPalette.forEach((cc, ci) => {
+          const car = new THREE.Group();
+          const cx = -16 + ci * 6.4;
+          car.position.set(cx, 0.32, 18.2);
+          car.rotation.y = ci % 2 === 0 ? 0.35 : -0.35;
+          const bodyMat = new THREE.MeshStandardMaterial({ color: cc, roughness: 0.3, metalness: 0.4 });
+          const chassis = new THREE.Mesh(new THREE.BoxGeometry(1.75, 0.65, 3.9), bodyMat);
+          chassis.position.y = 0.52;
+          const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.55, 2.1), glassCarMat);
+          cabin.position.set(0, 1.08, -0.15);
+          car.add(chassis, cabin);
+          for (const wx of [-0.82, 0.82]) {
+            for (const wz of [-1.15, 1.15]) {
+              const wh = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.24, 10), tireMat);
+              wh.rotation.z = Math.PI / 2;
+              wh.position.set(wx, 0.32, wz);
+              car.add(wh);
+            }
+          }
+          pasar.add(car);
+        });
+
+        pasar.add(
+          plinth,
+          forecourt,
+          mainBlock,
+          arcadeCanopy,
+          canopyTrim,
+          soffitStrip,
+          parapet,
+          roofDeck,
+          skylightBase,
+          skylightRoof,
+          rooftopSign,
+          facadeMarquee
+        );
+        enableShadows(pasar, true, true);
+        rooftopSign.castShadow = true;
+        scene.add(pasar);
+      }
+
+      // ----------------------------------------------------------------------
+      // HERO 2: BUNDARAN TAMANSARI & TUGU JAM (prog ~0.768, outer bend side 1)
+      // Circular manicured island (r ~7.2m), red/white curb, glowing 4-face Tugu Jam
+      // ----------------------------------------------------------------------
+      {
+        const spot = snapHeroSpot(0.768, 1, 23.6, 0.24);
+        heroClearZones.push({ x: spot.x, z: spot.z, radSq: 24 * 24, uProg: 0.768, side: 1 });
+
+        const tamansari = new THREE.Group();
+        tamansari.position.set(spot.x, spot.y, spot.z);
+        tamansari.rotation.y = spot.yaw;
+
+        const rwCurbTex = makeHiResTex(1024, 128, (g, w, h) => {
+          const segs = 24;
+          const sw = w / segs;
+          for (let i = 0; i < segs; i++) {
+            g.fillStyle = i % 2 === 0 ? '#dc2626' : '#f8fafc';
+            g.fillRect(i * sw, 0, sw + 1, h);
+          }
+          g.fillStyle = 'rgba(0,0,0,0.18)';
+          g.fillRect(0, h - 18, w, 18);
+        });
+        const clockTex = makeHiResTex(512, 512, (g, w, h) => {
+          const cx = w / 2;
+          const cy = h / 2;
+          g.fillStyle = '#fffbeb';
+          g.fillRect(0, 0, w, h);
+          g.strokeStyle = '#92400e';
+          g.lineWidth = 22;
+          g.beginPath();
+          g.arc(cx, cy, w * 0.44, 0, Math.PI * 2);
+          g.stroke();
+          g.strokeStyle = '#1f2937';
+          g.lineWidth = 6;
+          g.beginPath();
+          g.arc(cx, cy, w * 0.39, 0, Math.PI * 2);
+          g.stroke();
+          for (let i = 0; i < 12; i++) {
+            const ang = (i / 12) * Math.PI * 2 - Math.PI / 2;
+            const r0 = w * (i % 3 === 0 ? 0.30 : 0.33);
+            const r1 = w * 0.38;
+            g.lineWidth = i % 3 === 0 ? 12 : 6;
+            g.beginPath();
+            g.moveTo(cx + Math.cos(ang) * r0, cy + Math.sin(ang) * r0);
+            g.lineTo(cx + Math.cos(ang) * r1, cy + Math.sin(ang) * r1);
+            g.stroke();
+          }
+          // Classic clock hands (10:10)
+          g.lineCap = 'round';
+          g.strokeStyle = '#111827';
+          g.lineWidth = 14;
+          g.beginPath();
+          g.moveTo(cx, cy);
+          g.lineTo(cx - w * 0.16, cy - h * 0.10);
+          g.stroke();
+          g.lineWidth = 9;
+          g.beginPath();
+          g.moveTo(cx, cy);
+          g.lineTo(cx + w * 0.24, cy - h * 0.16);
+          g.stroke();
+          g.fillStyle = '#b45309';
+          g.beginPath();
+          g.arc(cx, cy, 16, 0, Math.PI * 2);
+          g.fill();
+        });
+        const plaqueTex = makeHiResTex(1024, 256, (g, w, h) => {
+          g.fillStyle = '#0f172a';
+          g.fillRect(0, 0, w, h);
+          g.strokeStyle = '#facc15';
+          g.lineWidth = 10;
+          g.strokeRect(10, 10, w - 20, h - 20);
+          g.fillStyle = '#fef08a';
+          g.font = '900 84px "Titillium Web", sans-serif';
+          g.textAlign = 'center';
+          g.textBaseline = 'middle';
+          g.fillText('TAMANSARI SALATIGA', w / 2, h * 0.44);
+          g.fillStyle = '#e2e8f0';
+          g.font = '700 30px "Titillium Web", sans-serif';
+          g.fillText('BUNDARAN TUGU JAM · HEART OF CITY', w / 2, h * 0.77);
+        });
+
+        const baseStoneMat = new THREE.MeshStandardMaterial({ color: 0xe7e0d2, roughness: 0.72 });
+        const graniteMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.58, metalness: 0.15 });
+        const goldTrimMat = new THREE.MeshStandardMaterial({
+          color: 0xfacc15,
+          emissive: 0xd97706,
+          emissiveIntensity: 0.35,
+          metalness: 0.8,
+          roughness: 0.22,
+        });
+        const curbSideMat = new THREE.MeshStandardMaterial({ map: rwCurbTex, roughness: 0.62 });
+        const curbTopMat = new THREE.MeshStandardMaterial({ color: 0xd1d5db, roughness: 0.75 });
+        const lawnMat = new THREE.MeshStandardMaterial({ color: 0x2f7d32, roughness: 0.88 });
+        const hedgeMat = new THREE.MeshStandardMaterial({ color: 0x1e5622, roughness: 0.85 });
+        const clockMat = new THREE.MeshStandardMaterial({
+          map: clockTex,
+          emissiveMap: clockTex,
+          emissive: 0xfff3c4,
+          emissiveIntensity: 0.85,
+          roughness: 0.25,
+        });
+        const plaqueMat = new THREE.MeshStandardMaterial({
+          map: plaqueTex,
+          emissiveMap: plaqueTex,
+          emissive: 0xffffff,
+          emissiveIntensity: 0.48,
+          roughness: 0.32,
+        });
+
+        // Deep sunken island foundation + red-and-white curb ring (r = 7.2m)
+        const islandSub = new THREE.Mesh(
+          new THREE.CylinderGeometry(7.35, 7.6, 3.4, 36),
+          new THREE.MeshStandardMaterial({ color: 0x52525b, roughness: 0.9 })
+        );
+        islandSub.position.y = -1.65;
+        const curbRing = new THREE.Mesh(
+          new THREE.CylinderGeometry(7.2, 7.35, 0.55, 36),
+          [curbSideMat, curbTopMat, curbTopMat]
+        );
+        curbRing.position.y = 0.28;
+        const lawnDisk = new THREE.Mesh(new THREE.CylinderGeometry(6.75, 6.75, 0.38, 36), lawnMat);
+        lawnDisk.position.y = 0.46;
+
+        // Concentric manicured hedge & tropical flower beds
+        const innerHedge = new THREE.Mesh(new THREE.TorusGeometry(5.2, 0.45, 8, 32), hedgeMat);
+        innerHedge.rotation.x = Math.PI / 2;
+        innerHedge.position.y = 0.72;
+
+        const flowerCols = [0xef4444, 0xfacc15, 0xf97316, 0xf43f5e];
+        for (let fi = 0; fi < 24; fi++) {
+          const ang = (fi / 24) * Math.PI * 2;
+          const rad = fi % 2 === 0 ? 4.1 : 5.95;
+          const bloom = new THREE.Mesh(
+            new THREE.SphereGeometry(0.42, 8, 6),
+            new THREE.MeshStandardMaterial({ color: flowerCols[fi % flowerCols.length], roughness: 0.75 })
+          );
+          bloom.scale.set(1.2, 0.65, 1.2);
+          bloom.position.set(Math.cos(ang) * rad, 0.78, Math.sin(ang) * rad);
+          tamansari.add(bloom);
+        }
+
+        // Tall Iconic Tugu Jam Bundaran Tamansari Clock Tower (~17m)
+        const ped1 = new THREE.Mesh(new THREE.CylinderGeometry(3.0, 3.4, 1.2, 8), graniteMat);
+        ped1.position.y = 1.1;
+        const ped2 = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.5, 1.4, 8), baseStoneMat);
+        ped2.position.y = 2.4;
+        const shaft = new THREE.Mesh(new THREE.BoxGeometry(2.5, 7.4, 2.5), baseStoneMat);
+        shaft.position.y = 6.8;
+
+        for (const sx of [-1.2, 1.2]) {
+          for (const sz of [-1.2, 1.2]) {
+            const rib = new THREE.Mesh(new THREE.BoxGeometry(0.42, 7.6, 0.42), graniteMat);
+            rib.position.set(sx, 6.8, sz);
+            tamansari.add(rib);
+          }
+        }
+        const collar = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.55, 3.2), goldTrimMat);
+        collar.position.y = 10.6;
+
+        // Clock Chamber + 4 Glowing Clock Faces
+        const clockBox = new THREE.Mesh(new THREE.BoxGeometry(2.9, 2.9, 2.9), baseStoneMat);
+        clockBox.position.y = 12.3;
+        const faceGeo = new THREE.CircleGeometry(1.08, 24);
+        const bezelGeo = new THREE.TorusGeometry(1.12, 0.11, 8, 24);
+        const faceDirs = [
+          { px: 0, pz: 1.48, ry: 0 },
+          { px: 0, pz: -1.48, ry: Math.PI },
+          { px: 1.48, pz: 0, ry: Math.PI / 2 },
+          { px: -1.48, pz: 0, ry: -Math.PI / 2 },
+        ];
+        faceDirs.forEach((fd) => {
+          const face = new THREE.Mesh(faceGeo, clockMat);
+          face.position.set(fd.px, 12.3, fd.pz);
+          face.rotation.y = fd.ry;
+          const bezel = new THREE.Mesh(bezelGeo, goldTrimMat);
+          bezel.position.set(fd.px, 12.3, fd.pz);
+          bezel.rotation.y = fd.ry;
+          tamansari.add(face, bezel);
+        });
+
+        // Javanese pavilion roof cap & golden spire
+        const crownEaves = new THREE.Mesh(new THREE.ConeGeometry(2.75, 1.7, 4), graniteMat);
+        crownEaves.rotation.y = Math.PI / 4;
+        crownEaves.position.y = 14.55;
+        const spire = new THREE.Mesh(new THREE.ConeGeometry(0.55, 2.6, 8), goldTrimMat);
+        spire.position.y = 16.5;
+
+        // Prominent Front "TAMANSARI SALATIGA" Plaque facing oncoming car
+        const plaquePedestal = new THREE.Mesh(new THREE.BoxGeometry(5.6, 1.75, 0.55), graniteMat);
+        plaquePedestal.position.set(0, 1.45, 4.75);
+        const plaqueFace = new THREE.Mesh(new THREE.PlaneGeometry(5.2, 1.35), plaqueMat);
+        plaqueFace.position.set(0, 1.48, 5.04);
+
+        tamansari.add(
+          islandSub,
+          curbRing,
+          lawnDisk,
+          innerHedge,
+          ped1,
+          ped2,
+          shaft,
+          collar,
+          clockBox,
+          crownEaves,
+          spire,
+          plaquePedestal,
+          plaqueFace
+        );
+        enableShadows(tamansari, true, true);
+        scene.add(tamansari);
+      }
+
+      // ----------------------------------------------------------------------
+      // HERO 3: RUMAH DINAS WALI KOTA SALATIGA (Jl. Diponegoro, prog ~0.828, side -1)
+      // Dutch-Indies Colonial White Mansion, Doric portico, green shutters, Merah-Putih
+      // ----------------------------------------------------------------------
+      {
+        const spot = snapHeroSpot(0.828, -1, 35.2, 0.22);
+        heroClearZones.push({ x: spot.x, z: spot.z, radSq: 38 * 38, uProg: 0.828, side: -1 });
+
+        const rumdin = new THREE.Group();
+        rumdin.position.set(spot.x, spot.y, spot.z);
+        rumdin.rotation.y = spot.yaw;
+
+        const colonialFacadeTex = makeHiResTex(1024, 512, (g, w, h) => {
+          g.fillStyle = '#f8fafc';
+          g.fillRect(0, 0, w, h);
+          // Classical base stone plinth & cornice
+          g.fillStyle = '#cbd5e1';
+          g.fillRect(0, h - 56, w, 56);
+          g.fillStyle = '#e2e8f0';
+          g.fillRect(0, 0, w, 34);
+          // Symmetrical arched colonial windows with dark green wooden shutters
+          const winXs = [72, 198, 324, 610, 736, 862];
+          for (const wx of winXs) {
+            // Left & right dark green shutters
+            g.fillStyle = '#14532d';
+            g.fillRect(wx - 22, 136, 22, 240);
+            g.fillRect(wx + 90, 136, 22, 240);
+            // Louver detail on shutters
+            g.fillStyle = '#166534';
+            for (let sy = 148; sy < 368; sy += 16) {
+              g.fillRect(wx - 19, sy, 16, 6);
+              g.fillRect(wx + 93, sy, 16, 6);
+            }
+            // Arched top fanlight + dark glazed sash
+            g.fillStyle = '#1e293b';
+            g.beginPath();
+            g.arc(wx + 45, 146, 45, Math.PI, 0);
+            g.fill();
+            g.fillRect(wx, 146, 90, 232);
+            // White mullions
+            g.fillStyle = '#f8fafc';
+            g.fillRect(wx + 42, 102, 6, 276);
+            g.fillRect(wx, 200, 90, 6);
+            g.fillRect(wx, 286, 90, 6);
+          }
+          // Grand central double arched doorway
+          const dx = 452;
+          g.fillStyle = '#451a03';
+          g.beginPath();
+          g.arc(dx + 60, 162, 60, Math.PI, 0);
+          g.fill();
+          g.fillRect(dx, 162, 120, 294);
+          g.fillStyle = '#fde68a';
+          g.beginPath();
+          g.arc(dx + 60, 162, 46, Math.PI, 0);
+          g.fill();
+        });
+
+        const gateSignTex = makeHiResTex(1024, 224, (g, w, h) => {
+          g.fillStyle = '#f8fafc';
+          g.fillRect(0, 0, w, h);
+          g.strokeStyle = '#14532d';
+          g.lineWidth = 12;
+          g.strokeRect(10, 10, w - 20, h - 20);
+          g.fillStyle = '#14532d';
+          g.font = '900 78px "Titillium Web", sans-serif';
+          g.textAlign = 'center';
+          g.textBaseline = 'middle';
+          g.fillText('RUMAH DINAS WALI KOTA', w / 2, h * 0.42);
+          g.fillStyle = '#b91c1c';
+          g.font = '700 32px "Titillium Web", sans-serif';
+          g.fillText('PEMERINTAH KOTA SALATIGA', w / 2, h * 0.78);
+        });
+
+        const whiteStuccoMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.65 });
+        const shutterGreenMat = new THREE.MeshStandardMaterial({ color: 0x14532d, roughness: 0.58 });
+        const facadeColonialMat = new THREE.MeshStandardMaterial({ map: colonialFacadeTex, roughness: 0.68 });
+        const lawnMat = new THREE.MeshStandardMaterial({ color: 0x357a34, roughness: 0.9 });
+        const driveMat = new THREE.MeshStandardMaterial({ color: 0xd6d3d1, roughness: 0.85 });
+        const gateSignMat = new THREE.MeshStandardMaterial({
+          map: gateSignTex,
+          emissiveMap: gateSignTex,
+          emissive: 0xffffff,
+          emissiveIntensity: 0.34,
+          roughness: 0.38,
+        });
+
+        // Deep foundation & manicured front lawn + driveway
+        const plinth = new THREE.Mesh(
+          new THREE.BoxGeometry(38, 4.2, 27),
+          new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.88 })
+        );
+        plinth.position.set(0, -2.0, 0);
+        const lawn = new THREE.Mesh(new THREE.BoxGeometry(36.5, 0.38, 25.5), lawnMat);
+        lawn.position.set(0, 0.16, 0);
+        const driveway = new THREE.Mesh(new THREE.BoxGeometry(6.2, 0.42, 13.5), driveMat);
+        driveway.position.set(0, 0.17, 6.2);
+
+        // Colonial Mansion Core (27m wide x 6.4m wall x 13.5m deep) centered at z = -4.2
+        const manorPlinth = new THREE.Mesh(new THREE.BoxGeometry(28.5, 1.0, 15.0), driveMat);
+        manorPlinth.position.set(0, 0.65, -4.2);
+        const manorBody = new THREE.Mesh(new THREE.BoxGeometry(27.0, 5.8, 13.4), facadeColonialMat);
+        manorBody.position.set(0, 4.0, -4.2);
+
+        // 3D Projecting Green Shutters flanking front windows for deep relief shadows
+        for (const wx of [-11.0, -7.8, -4.6, 4.6, 7.8, 11.0]) {
+          const sLeft = new THREE.Mesh(new THREE.BoxGeometry(0.45, 2.7, 0.18), shutterGreenMat);
+          sLeft.position.set(wx - 0.72, 3.85, 2.58);
+          const sRight = new THREE.Mesh(new THREE.BoxGeometry(0.45, 2.7, 0.18), shutterGreenMat);
+          sRight.position.set(wx + 0.72, 3.85, 2.58);
+          rumdin.add(sLeft, sRight);
+        }
+
+        // Steep Terracotta-Red Limasan Hipped Roof + Ridge Finials
+        const mainRoof = new THREE.Mesh(new THREE.ConeGeometry(19.5, 4.4, 4), heroRoofTileMat);
+        mainRoof.rotation.y = Math.PI / 4;
+        mainRoof.scale.set(1.24, 1.0, 0.72);
+        mainRoof.position.set(0, 9.0, -4.2);
+
+        const upperLimasan = new THREE.Mesh(new THREE.ConeGeometry(8.2, 3.0, 4), heroRoofTileMat);
+        upperLimasan.rotation.y = Math.PI / 4;
+        upperLimasan.scale.set(1.3, 1.0, 0.7);
+        upperLimasan.position.set(0, 11.3, -4.2);
+
+        // Grand Front Portico with 6 White Doric Columns + Classical Pediment
+        const porticoDeck = new THREE.Mesh(new THREE.BoxGeometry(11.4, 0.95, 5.4), driveMat);
+        porticoDeck.position.set(0, 0.65, 4.5);
+        const colGeo = new THREE.CylinderGeometry(0.24, 0.31, 5.2, 12);
+        const capGeo = new THREE.BoxGeometry(0.8, 0.35, 0.8);
+        for (const cx of [-4.6, -2.75, -0.95, 0.95, 2.75, 4.6]) {
+          const col = new THREE.Mesh(colGeo, whiteStuccoMat);
+          col.position.set(cx, 3.7, 6.5);
+          const colCap = new THREE.Mesh(capGeo, whiteStuccoMat);
+          colCap.position.set(cx, 6.25, 6.5);
+          rumdin.add(col, colCap);
+        }
+        const entablature = new THREE.Mesh(new THREE.BoxGeometry(11.2, 0.75, 5.2), whiteStuccoMat);
+        entablature.position.set(0, 6.65, 4.4);
+
+        const pedShape = new THREE.Shape();
+        pedShape.moveTo(-5.8, 0);
+        pedShape.lineTo(5.8, 0);
+        pedShape.lineTo(0, 2.4);
+        pedShape.closePath();
+        const pedGeo = new THREE.ExtrudeGeometry(pedShape, { depth: 4.8, bevelEnabled: false });
+        const pediment = new THREE.Mesh(pedGeo, whiteStuccoMat);
+        pediment.position.set(0, 7.0, 2.0);
+        const porticoRoof = new THREE.Mesh(new THREE.ConeGeometry(6.6, 2.5, 4), heroRoofTileMat);
+        porticoRoof.rotation.y = Math.PI / 4;
+        porticoRoof.scale.set(1.2, 1.0, 0.78);
+        porticoRoof.position.set(0, 8.2, 4.4);
+
+        // Indonesian Merah-Putih Flagpole on Front Lawn
+        const flagPole = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.08, 0.13, 10.6, 8),
+          new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.75, roughness: 0.25 })
+        );
+        flagPole.position.set(-8.6, 5.4, 8.8);
+        const flagRed = new THREE.Mesh(
+          new THREE.BoxGeometry(2.6, 0.85, 0.08),
+          new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.55 })
+        );
+        flagRed.position.set(-7.25, 9.95, 8.8);
+        const flagWhite = new THREE.Mesh(
+          new THREE.BoxGeometry(2.6, 0.85, 0.08),
+          new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.55 })
+        );
+        flagWhite.position.set(-7.25, 9.1, 8.8);
+
+        // White Perimeter Low Fence & Entrance Gate Sign ("RUMAH DINAS WALI KOTA")
+        for (const fx of [-12.2, 12.2]) {
+          const wall = new THREE.Mesh(new THREE.BoxGeometry(11.6, 1.4, 0.55), whiteStuccoMat);
+          wall.position.set(fx, 0.9, 12.2);
+          rumdin.add(wall);
+        }
+        for (const px of [-6.0, 6.0]) {
+          const pier = new THREE.Mesh(new THREE.BoxGeometry(1.1, 3.6, 1.1), whiteStuccoMat);
+          pier.position.set(px, 1.9, 12.2);
+          const lantern = new THREE.Mesh(
+            new THREE.SphereGeometry(0.32, 8, 6),
+            new THREE.MeshStandardMaterial({ color: 0xfef3c7, emissive: 0xfbbf24, emissiveIntensity: 0.9 })
+          );
+          lantern.position.set(px, 3.95, 12.2);
+          rumdin.add(pier, lantern);
+        }
+        const gateArch = new THREE.Mesh(new THREE.BoxGeometry(13.2, 1.85, 0.55), whiteStuccoMat);
+        gateArch.position.set(0, 3.95, 12.2);
+        const gateSign = new THREE.Mesh(new THREE.PlaneGeometry(12.2, 1.6), gateSignMat);
+        gateSign.position.set(0, 3.95, 12.5);
+
+        rumdin.add(
+          plinth,
+          lawn,
+          driveway,
+          manorPlinth,
+          manorBody,
+          mainRoof,
+          upperLimasan,
+          porticoDeck,
+          entablature,
+          pediment,
+          porticoRoof,
+          flagPole,
+          flagRed,
+          flagWhite,
+          gateArch,
+          gateSign
+        );
+        enableShadows(rumdin, true, true);
+        scene.add(rumdin);
+      }
+
+      // ----------------------------------------------------------------------
+      // HERO 4: GERBANG KAMPUS UKSW (Jl. Diponegoro, prog ~0.888, side -1)
+      // Wide campus entrance archway + "KAMPUS UKSW SALATIGA" + Balairung hall
+      // ----------------------------------------------------------------------
+      {
+        const spot = snapHeroSpot(0.888, -1, 38.0, 0.20);
+        heroClearZones.push({ x: spot.x, z: spot.z, radSq: 44 * 44, uProg: 0.888, side: -1 });
+
+        const uksw = new THREE.Group();
+        uksw.position.set(spot.x, spot.y, spot.z);
+        uksw.rotation.y = spot.yaw;
+
+        const ukswSignTex = makeHiResTex(1024, 256, (g, w, h) => {
+          const grad = g.createLinearGradient(0, 0, w, 0);
+          grad.addColorStop(0, '#1e3a8a');
+          grad.addColorStop(0.5, '#1d4ed8');
+          grad.addColorStop(1, '#1e3a8a');
+          g.fillStyle = grad;
+          g.fillRect(0, 0, w, h);
+          // Crisp white horizontal borders & emblem medallion
+          g.fillStyle = '#ffffff';
+          g.fillRect(0, 0, w, 16);
+          g.fillRect(0, h - 16, w, 16);
+          g.strokeStyle = '#93c5fd';
+          g.lineWidth = 4;
+          g.strokeRect(20, 26, w - 40, h - 52);
+
+          // UKSW Crest Badge on Left
+          g.fillStyle = '#ffffff';
+          g.beginPath();
+          g.arc(110, h / 2, 62, 0, Math.PI * 2);
+          g.fill();
+          g.fillStyle = '#1e3a8a';
+          g.beginPath();
+          g.arc(110, h / 2, 50, 0, Math.PI * 2);
+          g.fill();
+          g.fillStyle = '#facc15';
+          g.font = '900 34px "Titillium Web", sans-serif';
+          g.textAlign = 'center';
+          g.textBaseline = 'middle';
+          g.fillText('UKSW', 110, h / 2);
+
+          // Main Title
+          g.fillStyle = '#ffffff';
+          g.font = '900 84px "Titillium Web", sans-serif';
+          g.fillText('KAMPUS UKSW SALATIGA', w * 0.56, h * 0.44);
+          g.fillStyle = '#dbeafe';
+          g.font = '700 30px "Titillium Web", sans-serif';
+          g.fillText('UNIVERSITAS KRISTEN SATYA WACANA · JL. DIPONEGORO', w * 0.56, h * 0.77);
+        });
+
+        const stoneMat = new THREE.MeshStandardMaterial({ color: 0xf1ede4, roughness: 0.68 });
+        const ukswBlueMat = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.42, metalness: 0.12 });
+        const glassMat = new THREE.MeshStandardMaterial({ color: 0x1e3a5f, roughness: 0.18, metalness: 0.58 });
+        const plazaMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.84 });
+        const ukswSignMat = new THREE.MeshStandardMaterial({
+          map: ukswSignTex,
+          emissiveMap: ukswSignTex,
+          emissive: 0xffffff,
+          emissiveIntensity: 0.48,
+          roughness: 0.3,
+        });
+
+        // Broad stepped plaza & deep foundation
+        const plinth = new THREE.Mesh(
+          new THREE.BoxGeometry(56, 4.6, 36),
+          new THREE.MeshStandardMaterial({ color: 0x52525b, roughness: 0.9 })
+        );
+        plinth.position.set(0, -2.15, -1);
+        const plaza = new THREE.Mesh(new THREE.BoxGeometry(54, 0.5, 34), plazaMat);
+        plaza.position.set(0, 0.25, -1);
+
+        // Wide Iconic Campus Entrance Archway at trackside front (z = +14.6 => ~23.4m from centerline)
+        for (const sx of [-9.4, 9.4]) {
+          const pylon = new THREE.Mesh(new THREE.BoxGeometry(2.8, 7.6, 2.4), stoneMat);
+          pylon.position.set(sx, 3.8, 14.6);
+          const blueStrip = new THREE.Mesh(new THREE.BoxGeometry(2.95, 7.2, 0.55), ukswBlueMat);
+          blueStrip.position.set(sx, 3.8, 15.65);
+          uksw.add(pylon, blueStrip);
+        }
+        const archBeam = new THREE.Mesh(new THREE.BoxGeometry(22.4, 2.8, 2.6), ukswBlueMat);
+        archBeam.position.set(0, 6.8, 14.6);
+        const archRoof = new THREE.Mesh(new THREE.BoxGeometry(23.6, 0.45, 3.4), stoneMat);
+        archRoof.position.set(0, 8.35, 14.6);
+        const archSign = new THREE.Mesh(new THREE.PlaneGeometry(19.6, 2.45), ukswSignMat);
+        archSign.position.set(0, 6.8, 15.92);
+
+        // Low Blue-and-White Monument Sign Wall right beside the gate for low driver eye-level
+        const monWall = new THREE.Mesh(new THREE.BoxGeometry(10.6, 2.2, 1.1), stoneMat);
+        monWall.position.set(16.2, 1.2, 14.6);
+        const monSign = new THREE.Mesh(new THREE.PlaneGeometry(9.8, 1.9), ukswSignMat);
+        monSign.position.set(16.2, 1.25, 15.18);
+
+        // Grand Balairung / Notohamidjojo Academic Hall Set Back at z = -6.5
+        const centerHall = new THREE.Mesh(new THREE.BoxGeometry(24, 12.2, 15), stoneMat);
+        centerHall.position.set(0, 6.5, -6.5);
+        const centerGlass = new THREE.Mesh(new THREE.BoxGeometry(20, 8.8, 15.4), glassMat);
+        centerGlass.position.set(0, 6.7, -6.5);
+        const hallRoof = new THREE.Mesh(new THREE.ConeGeometry(18.5, 4.4, 4), heroRoofTileMat);
+        hallRoof.rotation.y = Math.PI / 4;
+        hallRoof.scale.set(1.22, 1.0, 0.82);
+        hallRoof.position.set(0, 14.6, -6.5);
+
+        for (const sx of [-19, 19]) {
+          const wing = new THREE.Mesh(new THREE.BoxGeometry(13.5, 9.2, 20), stoneMat);
+          wing.position.set(sx, 5.0, -5.0);
+          const wGlass = new THREE.Mesh(new THREE.BoxGeometry(13.8, 5.8, 16), glassMat);
+          wGlass.position.set(sx, 5.2, -5.0);
+          const wBand = new THREE.Mesh(new THREE.BoxGeometry(14.0, 0.75, 20.4), ukswBlueMat);
+          wBand.position.set(sx, 9.7, -5.0);
+          uksw.add(wing, wGlass, wBand);
+        }
+
+        // UKSW Clock / Bell Tower Spire
+        const tower = new THREE.Mesh(new THREE.BoxGeometry(4.2, 20.5, 4.2), stoneMat);
+        tower.position.set(-10.5, 10.6, -13.5);
+        const towerClock = new THREE.Mesh(
+          new THREE.BoxGeometry(4.45, 2.2, 4.45),
+          new THREE.MeshStandardMaterial({
+            color: 0xfef08a,
+            emissive: 0xfacc15,
+            emissiveIntensity: 0.72,
+            roughness: 0.25,
+          })
+        );
+        towerClock.position.set(-10.5, 18.6, -13.5);
+        const towerCap = new THREE.Mesh(new THREE.ConeGeometry(3.5, 4.2, 4), ukswBlueMat);
+        towerCap.rotation.y = Math.PI / 4;
+        towerCap.position.set(-10.5, 22.9, -13.5);
+
+        // Flanking Campus Royal Palms framing the entrance cleanly
+        const palmTrunkMat = new THREE.MeshStandardMaterial({ color: 0x6b5344, roughness: 0.9 });
+        const palmLeafMat = new THREE.MeshStandardMaterial({ color: 0x2e7d32, roughness: 0.75 });
+        for (const [px, pz, h] of [[-14.2, 11.2, 8.2], [-18.5, 9.5, 9.4], [22.8, 10.5, 8.8], [26.2, 8.5, 7.9]]) {
+          const pTrunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.34, h, 7), palmTrunkMat);
+          pTrunk.position.set(px, h * 0.5, pz);
+          uksw.add(pTrunk);
+          for (let fi = 0; fi < 5; fi++) {
+            const frond = new THREE.Mesh(new THREE.ConeGeometry(0.95, 3.6, 5), palmLeafMat);
+            const ang = (fi / 5) * Math.PI * 2;
+            frond.position.set(px + Math.cos(ang) * 1.1, h + 0.15, pz + Math.sin(ang) * 1.1);
+            frond.rotation.z = -Math.cos(ang) * 1.15;
+            frond.rotation.x = Math.sin(ang) * 1.15;
+            uksw.add(frond);
+          }
+        }
+
+        uksw.add(
+          plinth,
+          plaza,
+          archBeam,
+          archRoof,
+          archSign,
+          monWall,
+          monSign,
+          centerHall,
+          centerGlass,
+          hallRoof,
+          tower,
+          towerClock,
+          towerCap
+        );
+        enableShadows(uksw, true, true);
+        scene.add(uksw);
+      }
+
+      return heroClearZones;
+    };
+
+    const heroClearZones = buildSalatigaHeroLandmarks();
+
+    const makeSalatigaGrandstands = (spots) => {
+      const crowdCoords = [];
+      for (let gsIdx = 0; gsIdx < spots.length; gsIdx++) {
+        const spot = spots[gsIdx];
+        const idx = Math.round(spot.u * SAMPLE_COUNT) % SAMPLE_COUNT;
+        const p = pos[idx];
+        const r = right[idx];
+        const gx = p.x + r.x * spot.side * spot.dist;
+        const gz = p.z + r.z * spot.side * spot.dist;
+        if (nearestSample(gx, gz).distSq < 250) continue;
+
+        let blockedByHero = false;
+        for (const hz of heroClearZones) {
+          if ((gx - hz.x) ** 2 + (gz - hz.z) ** 2 < hz.radSq) {
+            blockedByHero = true;
+            break;
+          }
+        }
+        if (blockedByHero) continue;
+
+        const gsGroup = new THREE.Group();
+        gsGroup.position.set(gx, p.y - 0.3, gz);
+        gsGroup.rotation.y = Math.atan2(-spot.side * r.x, -spot.side * r.z);
+
+        const gsSubBase = new THREE.Mesh(new THREE.BoxGeometry(26, 4.5, 9.2), gsConcreteMat);
+        gsSubBase.position.set(0, -1.9, -3.1);
+        gsSubBase.receiveShadow = true;
+        gsSubBase.castShadow = true;
+        gsGroup.add(gsSubBase);
+
+        for (let tier = 0; tier < 5; tier++) {
+          const step = new THREE.Mesh(new THREE.BoxGeometry(26, 0.85, 1.8), gsConcreteMat);
+          step.position.set(0, 0.7 + tier * 1.15, -tier * 1.55);
+          step.castShadow = true;
+          step.receiveShadow = true;
+          gsGroup.add(step);
+          for (let s = -11.6; s <= 11.6; s += 1.4) {
+            const localV = new THREE.Vector3(s, 1.12 + tier * 1.15, -tier * 1.55 + 0.12);
+            localV.applyAxisAngle(new THREE.Vector3(0, 1, 0), gsGroup.rotation.y);
+            crowdCoords.push({
+              x: gx + localV.x,
+              y: p.y - 0.3 + localV.y,
+              z: gz + localV.z,
+              yaw: gsGroup.rotation.y,
+            });
+          }
+        }
+        for (let px = -11; px <= 11; px += 11) {
+          const post = new THREE.Mesh(new THREE.BoxGeometry(0.45, 9.2, 0.55), gsSteelMat);
+          post.position.set(px, 4.6, -7.2);
+          gsGroup.add(post);
+        }
+        const canopy = new THREE.Mesh(new THREE.BoxGeometry(27, 0.22, 9.2), gsCanopyMat);
+        canopy.position.set(0, 8.8, -3.2);
+        canopy.rotation.x = 0.12;
+        canopy.castShadow = true;
+        const fascia = new THREE.Mesh(
+          new THREE.BoxGeometry(27, 1.05, 0.36),
+          gsIdx % 2 === 1 ? esLumutFasciaMats : topCoolFasciaMats
+        );
+        fascia.position.set(0, 8.2, 1.3);
+        gsGroup.add(canopy, fascia);
+        scene.add(gsGroup);
+      }
+      if (crowdCoords.length) {
+        const fanGeo = new THREE.CylinderGeometry(0.22, 0.28, 0.85, 8);
+        fanGeo.translate(0, 0.42, 0);
+        const fanMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.78 });
+        const fanIM = new THREE.InstancedMesh(fanGeo, fanMat, crowdCoords.length);
+        const palette = [0xe10600, 0xf2efe6, 0x00d2be, 0x22ff88, 0xfacc15, 0x3b82f6];
+        const fc = new THREE.Color();
+        crowdCoords.forEach((spFan, i) => {
+          dummy.position.set(spFan.x, spFan.y, spFan.z);
+          dummy.rotation.set(0, spFan.yaw, 0);
+          dummy.scale.setScalar(1);
+          dummy.updateMatrix();
+          fanIM.setMatrixAt(i, dummy.matrix);
+          fanIM.setColorAt(i, fc.setHex(palette[(i * 7) % palette.length]));
+        });
+        fanIM.instanceMatrix.needsUpdate = true;
+        if (fanIM.instanceColor) fanIM.instanceColor.needsUpdate = true;
+        fanIM.computeBoundingSphere();
+        scene.add(fanIM);
+      }
+    };
+
+    const salEnv = buildSalatigaEnvironment(scene, {
+      pos,
+      right,
+      tan,
+      SAMPLE_COUNT,
+      HALF_WIDTH,
+      startU,
+      drsZones,
+      nearestSample,
+      envTime,
+      dummy,
+      topCoolGantryMats,
+      esLumutBoardMats,
+      gantryTrimMat,
+      makeSponsorBannerTexture,
+      spawnBanners,
+      makeGrandstandCluster: makeSalatigaGrandstands,
+      heroClearZones,
+      abortSignal: options.abortSignal,
+    });
+    mountainMistUniform = salEnv?.mountainMistUniform ?? null;
+  } else {
   // Monaco Tunnel (sculpted ribbed concrete arch + twin continuous ceiling LED strips + wall reflectors)
   const tunStartIdx = Math.floor(tunnelStart * SAMPLE_COUNT);
   const tunEndIdx = Math.ceil(tunnelEnd * SAMPLE_COUNT);
@@ -2849,7 +4075,7 @@ export function buildMonacoTrack(scene) {
   scene.add(terrain);
 
   // Mediterranean Port Hercule water (strictly inside harbor basin & eastern seafront)
-  const waterMaterial = createWaterMaterial();
+  waterMaterial = createWaterMaterial();
   const water = new THREE.Mesh(new THREE.PlaneGeometry(2500, 3600, 96, 96), waterMaterial);
   water.rotation.x = -Math.PI / 2;
   water.position.set(1750, -1.6, -100);
@@ -2901,22 +4127,6 @@ export function buildMonacoTrack(scene) {
   const seCopingB = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.75, 145), copingMat);
   seCopingB.position.set(560, 0.25, 267.5);
   scene.add(neCopingA, neCopingB, seCopingA, seCopingB);
-
-  // Track clearance helper (prevents any prop/building from overlapping track)
-  const nearestSample = (x, z) => {
-    let best = 0;
-    let bd = Infinity;
-    for (let k = 0; k < SAMPLE_COUNT; k += 4) {
-      const dx = x - pos[k].x;
-      const dz = z - pos[k].z;
-      const d = dx * dx + dz * dz;
-      if (d < bd) {
-        bd = d;
-        best = k;
-      }
-    }
-    return { idx: best, distSq: bd };
-  };
 
   // --- Shared Futuristic Architectural Materials (5 Bright, Contrasting Luxury Palettes) ---
   const whiteRibbonTex = makeZahaCompositeTextures();
@@ -3195,17 +4405,15 @@ export function buildMonacoTrack(scene) {
     }
   }
 
-  const dummy = new THREE.Object3D();
-
-  const spawnTowerBatch = (specs, geo, mat, cast = true) => {
+  const spawnTowerBatch = (specs, geo, mat, castShadow = true) => {
     if (!specs.length) return;
     const im = new THREE.InstancedMesh(geo, mat, specs.length);
-    im.castShadow = cast;
+    im.castShadow = castShadow;
     im.receiveShadow = true;
-    specs.forEach((b, i) => {
-      dummy.position.set(b.x, b.y, b.z);
-      dummy.rotation.set(0, b.yaw, 0);
-      dummy.scale.set(b.w, b.h, b.d);
+    specs.forEach((s, i) => {
+      dummy.position.set(s.x, s.y, s.z);
+      dummy.rotation.set(0, s.yaw, 0);
+      dummy.scale.set(s.w, s.h, s.d);
       dummy.updateMatrix();
       im.setMatrixAt(i, dummy.matrix);
     });
@@ -3366,10 +4574,6 @@ export function buildMonacoTrack(scene) {
     casino.add(plinth, mainHall, mansard, portico, pediment, marquee);
     scene.add(casino);
   }
-
-  // Shared GPU animation uniforms (driven by engine.ts tick at 60 FPS, zero CPU loops)
-  const envTime = { value: 0 };
-  const playerPosUniform = { value: new THREE.Vector3() };
 
   // --- Palm Trees, Landscaped Marble Planters, Coastal Shrubs & Bougainvillea Hedges ---
   const palmSpecs = [];
@@ -3704,23 +4908,6 @@ export function buildMonacoTrack(scene) {
     { u: uAtPoint(TRACK_POINTS[29]), side: 1, dist: 19 },
     { u: uAtPoint(TRACK_POINTS[31]), side: -1, dist: 20 },
   ];
-  const gsSteelMat = new THREE.MeshStandardMaterial({ color: 0x27303d, metalness: 0.65, roughness: 0.4 });
-  const gsConcreteMat = new THREE.MeshStandardMaterial({ color: 0x737982, roughness: 0.85 });
-  const gsCanopyMat = new THREE.MeshStandardMaterial({ color: 0xf4f0e6, roughness: 0.5, side: THREE.DoubleSide });
-  const topCoolFasciaTex = topCoolTex.clone();
-  topCoolFasciaTex.wrapS = THREE.RepeatWrapping;
-  topCoolFasciaTex.repeat.set(3, 1);
-  topCoolFasciaTex.needsUpdate = true;
-  const esLumutFasciaTex = esLumutTex.clone();
-  esLumutFasciaTex.wrapS = THREE.RepeatWrapping;
-  esLumutFasciaTex.repeat.set(3, 1);
-  esLumutFasciaTex.needsUpdate = true;
-
-  const gsTrimMat = new THREE.MeshStandardMaterial({ color: 0x161a23, roughness: 0.45 });
-  const topCoolFasciaFace = new THREE.MeshStandardMaterial({ map: topCoolFasciaTex, roughness: 0.38, metalness: 0.12 });
-  const esLumutFasciaFace = new THREE.MeshStandardMaterial({ map: esLumutFasciaTex, roughness: 0.38, metalness: 0.1 });
-  const topCoolFasciaMats = [gsTrimMat, gsTrimMat, gsTrimMat, gsTrimMat, topCoolFasciaFace, topCoolFasciaFace];
-  const esLumutFasciaMats = [gsTrimMat, gsTrimMat, gsTrimMat, gsTrimMat, esLumutFasciaFace, esLumutFasciaFace];
   const crowdCoords = [];
 
   for (let gsIdx = 0; gsIdx < grandstandSpots.length; gsIdx++) {
@@ -3939,23 +5126,6 @@ export function buildMonacoTrack(scene) {
       elevated: true,
     });
   }
-
-  const spawnBanners = (specs, mats) => {
-    if (!specs.length) return;
-    const bGeo = new THREE.BoxGeometry(6.8, 1.35, 0.14);
-    const im = new THREE.InstancedMesh(bGeo, mats, specs.length);
-    im.castShadow = true;
-    specs.forEach((b, i) => {
-      dummy.position.set(b.x, b.y, b.z);
-      dummy.rotation.set(0, b.yaw, 0);
-      dummy.scale.set(1, b.elevated ? 1.15 : 0.88, 1);
-      dummy.updateMatrix();
-      im.setMatrixAt(i, dummy.matrix);
-    });
-    im.instanceMatrix.needsUpdate = true;
-    im.computeBoundingSphere();
-    scene.add(im);
-  };
   const monacoGpFace = new THREE.MeshStandardMaterial({
     map: makeSponsorBannerTexture('#121722', '#e10600', 'MONACO GP', 'MONTE-CARLO STREET CIRCUIT'),
     roughness: 0.42,
@@ -4022,24 +5192,30 @@ export function buildMonacoTrack(scene) {
     yacht.rotation.y = -0.35 + (y % 3) * 0.14;
     scene.add(yacht);
   }
+  } // end Monaco-specific environment
 
-  // --- Trackside Repair Coins / Aero-Repair Tokens (14 glowing golden-cyan pickups) ---
-  const tokenSpots = [
-    { u: (startU + 0.055) % 1, lat: -2.4 }, // Sainte Devote exit
-    { u: (startU + 0.115) % 1, lat: 2.2 },  // Beau Rivage climb
-    { u: (startU + 0.180) % 1, lat: -1.8 }, // Massenet sweep
-    { u: (startU + 0.245) % 1, lat: 2.5 },  // Casino Square exit
-    { u: (startU + 0.310) % 1, lat: -2.2 }, // Mirabeau approach
-    { u: (startU + 0.380) % 1, lat: 2.4 },  // Fairmont Hairpin exit
-    { u: (startU + 0.445) % 1, lat: -2.1 }, // Portier apex
-    { u: (startU + 0.515) % 1, lat: 0.0 },  // Monaco Tunnel racing line
-    { u: (startU + 0.585) % 1, lat: -2.4 }, // Tunnel exit / Chicane braking
-    { u: (startU + 0.655) % 1, lat: 2.2 },  // Nouvelle Chicane exit
-    { u: (startU + 0.725) % 1, lat: -2.0 }, // Tabac corner exit
-    { u: (startU + 0.795) % 1, lat: 2.3 },  // Piscine complex
-    { u: (startU + 0.865) % 1, lat: -2.2 }, // La Rascasse exit
-    { u: (startU + 0.935) % 1, lat: 1.8 },  // Anthony Noghes exit
-  ];
+  // --- Trackside Repair Coins / Aero-Repair Tokens ---
+  const tokenSpots = isSalatiga
+    ? Array.from({ length: 18 }, (_, i) => ({
+        u: (startU + (i + 0.5) / 18) % 1,
+        lat: (i % 2 === 0 ? -1 : 1) * 2.2,
+      }))
+    : [
+        { u: (startU + 0.055) % 1, lat: -2.4 },
+        { u: (startU + 0.115) % 1, lat: 2.2 },
+        { u: (startU + 0.180) % 1, lat: -1.8 },
+        { u: (startU + 0.245) % 1, lat: 2.5 },
+        { u: (startU + 0.310) % 1, lat: -2.2 },
+        { u: (startU + 0.380) % 1, lat: 2.4 },
+        { u: (startU + 0.445) % 1, lat: -2.1 },
+        { u: (startU + 0.515) % 1, lat: 0.0 },
+        { u: (startU + 0.585) % 1, lat: -2.4 },
+        { u: (startU + 0.655) % 1, lat: 2.2 },
+        { u: (startU + 0.725) % 1, lat: -2.0 },
+        { u: (startU + 0.795) % 1, lat: 2.3 },
+        { u: (startU + 0.865) % 1, lat: -2.2 },
+        { u: (startU + 0.935) % 1, lat: 1.8 },
+      ];
 
   const coinOuterGeo = new THREE.TorusGeometry(0.62, 0.095, 12, 28);
   const coinCoreGeo = new THREE.CylinderGeometry(0.49, 0.49, 0.10, 24);
@@ -4113,24 +5289,19 @@ export function buildMonacoTrack(scene) {
   });
 
   // Checkpoints (checkpoints[0] MUST align with startFinishLine.u)
-  const checkpoints = [
-    { u: startU, name: 'Start / Finish' },
-    { u: uAtPoint(TRACK_POINTS[4]), name: 'Sainte Devote' },
-    { u: uAtPoint(TRACK_POINTS[9]), name: 'Casino Square' },
-    { u: uAtPoint(TRACK_POINTS[15]), name: 'Fairmont Hairpin' },
-    { u: uAtPoint(TRACK_POINTS[18]), name: 'Portier' },
-    { u: uAtPoint(TRACK_POINTS[20]), name: 'Monaco Tunnel' },
-    { u: uAtPoint(TRACK_POINTS[24]), name: 'Nouvelle Chicane' },
-    { u: uAtPoint(TRACK_POINTS[27]), name: 'Piscine' },
-    { u: uAtPoint(TRACK_POINTS[31]), name: 'La Rascasse' },
-  ];
+  const checkpoints = cfg.checkpoints.map((cp) => ({
+    u: uAtPoint(points[cp.pointIndex]),
+    name: cp.name,
+  }));
 
   const trackCurve = {
     userData: {
+      circuitId: cfg.id,
       samples,
       length: totalLength,
       halfWidth: HALF_WIDTH,
       waterMaterial,
+      mountainMistUniform,
       asphaltMaterial: asphaltMat,
       curbMaterial: curbMat,
       tunnel: { uStart: tunnelStart, uEnd: tunnelEnd },
@@ -4140,8 +5311,10 @@ export function buildMonacoTrack(scene) {
   };
 
   return {
+    circuitId: cfg.id,
+    playerTeam: cfg.playerTeam,
     trackCurve,
-    startFinishLine: { u: startU, lights: gantryLights },
+    startFinishLine: { u: startU, lights: gantryLights, poleLeadU, gridStepU },
     drsZones,
     checkpoints,
     repairTokens,

@@ -13,7 +13,8 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
-import { buildMonacoTrack } from './track.js';
+import { buildTrack } from './track.js';
+import { CircuitId } from '../data/circuits.ts';
 import {
   createF1Car,
   updateCarPhysics,
@@ -26,6 +27,7 @@ import {
   initAudio,
   updateAudio,
   updateHUD,
+  setHudCircuit,
   notifyRepairPickup,
   playWhooshSound,
   playCollisionSound,
@@ -208,7 +210,7 @@ function createSkyDome(scene: THREE.Scene, sunDir: THREE.Vector3) {
     `,
   });
 
-  const skyDome = new THREE.Mesh(new THREE.SphereGeometry(2500, 48, 32), skyDomeMat);
+  const skyDome = new THREE.Mesh(new THREE.SphereGeometry(7500, 48, 32), skyDomeMat);
   skyDome.renderOrder = -2;
   skyDome.frustumCulled = false;
   scene.add(skyDome);
@@ -306,33 +308,47 @@ function createMediterraneanClouds(scene: THREE.Scene, sunDir: THREE.Vector3) {
     ]),
   ];
 
-  const clouds: Array<{ mesh: THREE.Mesh; speed: number; baseZ: number }> = [];
-  const centerX = 340;
-  const centerZ = -140;
+  const clouds: Array<{ mesh: THREE.Mesh; speed: number; dx: number; dz: number }> = [];
+  let cloudCenterX = 340;
+  let cloudCenterZ = -140;
   for (let i = 0; i < 22; i++) {
     const ang = (i / 22) * Math.PI * 2 + (i % 3) * 0.14;
     const rad = 460 + (i % 5) * 140;
     const mesh = new THREE.Mesh(prototypes[i % prototypes.length], cloudMat);
     const sc = 1.2 + (i % 5) * 0.26;
     mesh.scale.set(sc, sc * 0.94, sc);
-    const cx = centerX + Math.cos(ang) * rad;
-    const cz = centerZ + Math.sin(ang) * rad;
-    mesh.position.set(cx, 138 + (i % 4) * 26, cz);
+    const dx = Math.cos(ang) * rad;
+    const dz = Math.sin(ang) * rad;
+    mesh.position.set(cloudCenterX + dx, 138 + (i % 4) * 26, cloudCenterZ + dz);
     mesh.rotation.y = (i * 0.9) % (Math.PI * 2);
     mesh.renderOrder = -1;
     scene.add(mesh);
-    clouds.push({ mesh, speed: 1.6 + (i % 4) * 0.55, baseZ: cz });
+    clouds.push({ mesh, speed: 1.6 + (i % 4) * 0.55, dx, dz });
   }
 
-  return { clouds, cloudMat };
+  return {
+    clouds,
+    cloudMat,
+    setCenter: (cx: number, cz: number) => {
+      cloudCenterX = cx;
+      cloudCenterZ = cz;
+      for (const c of clouds) {
+        c.mesh.position.x = cx + c.dx;
+        c.mesh.position.z = cz + c.dz;
+      }
+    },
+    getCenter: () => ({ x: cloudCenterX, z: cloudCenterZ }),
+  };
 }
 
 export type WeatherType = 'cerah' | 'hujan' | 'kabut';
+export type { CircuitId };
 
 export interface EngineController {
-  startRace: (weather: WeatherType) => void;
+  startRace: (weather: WeatherType, circuit?: CircuitId) => void;
   setWeather: (weather: WeatherType) => void;
-  restartWithWeather: (weather: WeatherType) => void;
+  setCircuit: (circuit: CircuitId) => void;
+  restartWithWeather: (weather: WeatherType, circuit?: CircuitId) => void;
 }
 
 export interface RaceFinishResult {
@@ -345,6 +361,7 @@ export interface RaceFinishResult {
 
 export interface EngineCallbacks {
   initialWeather?: WeatherType;
+  initialCircuit?: CircuitId;
   onWebGLError?: (msg: string) => void;
   onRaceFinish?: (result: RaceFinishResult | null) => void;
   onChequeredCountdown?: (secondsRemaining: number | null) => void;
@@ -563,7 +580,7 @@ export function startMonacoEngine(
     72,
     window.innerWidth / Math.max(1, window.innerHeight),
     0.1,
-    3200
+    9500
   );
   camera.position.set(0, 6, 14);
 
@@ -605,8 +622,52 @@ export function startMonacoEngine(
 
   // --- World + Sky Dome + Mediterranean Clouds + Player + AI Racers ---
   const { skyDome, skyDomeMat } = createSkyDome(scene, sunDir);
-  const { clouds, cloudMat } = createMediterraneanClouds(scene, sunDir);
-  const trackData = buildMonacoTrack(scene);
+  const { clouds, cloudMat, setCenter: setCloudCenter, getCenter: getCloudCenter } = createMediterraneanClouds(scene, sunDir);
+
+  let currentCircuit: CircuitId = callbacks.initialCircuit ?? 'monaco-gp';
+  let worldAbort: AbortController | null = new AbortController();
+  const worldGroup = new THREE.Group();
+  scene.add(worldGroup);
+
+  function computeTrackCenterXZ(td: any): [number, number] {
+    const pts = td?.trackCurve?.userData?.samples?.pos;
+    if (!Array.isArray(pts) || !pts.length) return [0, 0];
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let i = 0; i < pts.length; i += 8) {
+      const p = pts[i];
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.z < minZ) minZ = p.z;
+      if (p.z > maxZ) maxZ = p.z;
+    }
+    return [(minX + maxX) * 0.5, (minZ + maxZ) * 0.5];
+  }
+
+  function disposeWorldGroup() {
+    worldGroup.traverse((obj: any) => {
+      if (obj === worldGroup) return;
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) {
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const m of mats) {
+          if (!m) continue;
+          if (m.map) m.map.dispose();
+          if (m.bumpMap) m.bumpMap.dispose();
+          if (m.roughnessMap) m.roughnessMap.dispose();
+          if (m.normalMap) m.normalMap.dispose();
+          if (m.emissiveMap) m.emissiveMap.dispose();
+          m.dispose();
+        }
+      }
+    });
+    worldGroup.clear();
+  }
+
+  let trackData: any = buildTrack(worldGroup, currentCircuit, { abortSignal: worldAbort.signal });
+  const [initCx, initCz] = computeTrackCenterXZ(trackData);
+  setCloudCenter(initCx, initCz);
+  setHudCircuit(currentCircuit);
+
   const playerCar = createF1Car(0xe10600, true);
   scene.add(playerCar);
   updateCarPhysics(playerCar, { reset: true }, trackData, 0);
@@ -615,14 +676,17 @@ export function startMonacoEngine(
   const aiList = initAIRacers(scene, trackData);
   const allCars = [playerCar, ...aiList];
 
-  const trackUserData = trackData.trackCurve.userData as any;
-  const waterMat = trackUserData.waterMaterial;
-  waterMat.uniforms.uSunDir.value.copy(sunDir);
-  const asphaltMaterial = trackUserData.asphaltMaterial as THREE.MeshStandardMaterial | undefined;
-  const curbMaterial = trackUserData.curbMaterial as THREE.MeshStandardMaterial | undefined;
-  const tunnel = trackUserData.tunnel;
-  const envTime = trackUserData.envTime;
-  const trackPlayerPos = trackUserData.playerPos;
+  let trackUserData = trackData.trackCurve.userData as any;
+  let waterMat = trackUserData.waterMaterial;
+  if (waterMat?.uniforms?.uSunDir) {
+    waterMat.uniforms.uSunDir.value.copy(sunDir);
+  }
+  let asphaltMaterial = trackUserData.asphaltMaterial as THREE.MeshStandardMaterial | undefined;
+  let curbMaterial = trackUserData.curbMaterial as THREE.MeshStandardMaterial | undefined;
+  let tunnel = trackUserData.tunnel;
+  let envTime = trackUserData.envTime;
+  let trackPlayerPos = trackUserData.playerPos;
+  let mountainMistUniform = trackUserData.mountainMistUniform as { value: number } | null | undefined;
 
   // --- Pooled 60 FPS 3D Rain / Drizzle Streaks (THREE.LineSegments) ---
   const MAX_RAIN = 1500;
@@ -711,6 +775,13 @@ export function startMonacoEngine(
   let lightningTimer = 6 + Math.random() * 6;
   let lightningAge = -1;
 
+  function getFogRange() {
+    if (currentCircuit === 'salatiga-gp' && currentWeather === 'cerah') {
+      return { near: 420, far: 6200 };
+    }
+    return { near: activePreset.fogNear, far: activePreset.fogFar };
+  }
+
   function applyWeatherPreset(w: WeatherType) {
     currentWeather = w;
     activePreset = WEATHER_PRESETS[w];
@@ -771,14 +842,18 @@ export function startMonacoEngine(
 
     SKY_TARGET.setHex(activePreset.fogColor);
     if (activePreset.fogMode === 'linear') {
+      const { near, far } = getFogRange();
       linearFog.color.copy(SKY_TARGET);
-      linearFog.near = activePreset.fogNear;
-      linearFog.far = activePreset.fogFar;
+      linearFog.near = near;
+      linearFog.far = far;
       scene.fog = linearFog;
     } else {
       expFog.color.copy(SKY_TARGET);
       expFog.density = activePreset.fogDensity;
       scene.fog = expFog;
+    }
+    if (mountainMistUniform) {
+      mountainMistUniform.value = w === 'kabut' ? 1.0 : w === 'hujan' ? 0.38 : 0.0;
     }
     if (scene.background instanceof THREE.Color) {
       scene.background.copy(SKY_TARGET);
@@ -1038,6 +1113,10 @@ export function startMonacoEngine(
     const skyFlash = inTunnel ? flash * 0.12 : flash;
     skyDomeMat.uniforms.uLightning.value = skyFlash;
     cloudMat.uniforms.uLightning.value = skyFlash;
+    if (mountainMistUniform) {
+      const baseMist = currentWeather === 'kabut' ? 1.0 : currentWeather === 'hujan' ? 0.38 : 0.0;
+      mountainMistUniform.value = Math.max(0, baseMist - skyFlash * 0.28);
+    }
     sun.intensity = activePreset.sunInt + flash * (inTunnel ? 0.2 : 2.6);
     ambient.intensity = activePreset.ambientInt + flash * (inTunnel ? 0.1 : 0.95);
 
@@ -1379,11 +1458,25 @@ export function startMonacoEngine(
     }
   }
 
+  function snapCameraToGrid() {
+    const P = playerCar.userData.physics;
+    _fwd.set(-Math.sin(P.yaw), 0, -Math.cos(P.yaw));
+    chasePos
+      .copy(playerCar.position)
+      .addScaledVector(_fwd, -9.5)
+      .add(_shakeVec.set(0, 3.4, 0));
+    camera.position.copy(chasePos);
+    _look.copy(playerCar.position).addScaledVector(_fwd, 6).add(_lookUp);
+    camera.lookAt(_look);
+    tunnelMix = 0;
+  }
+
   function fullRestartRace() {
     stopVictoryMusic();
     chequeredCountdown = null;
     forcedFinish = false;
     forcedFinishState = null;
+    accumulator = 0;
     reportCountdown(null);
     callbacks.onRaceFinish?.(null);
     restartRace(allCars, trackData);
@@ -1406,18 +1499,55 @@ export function startMonacoEngine(
         tok.group.scale.setScalar(1);
       }
     }
+    snapCameraToGrid();
+  }
+
+  function switchCircuit(circuitId: CircuitId) {
+    if (circuitId === currentCircuit && trackData?.circuitId === circuitId) return;
+    currentCircuit = circuitId;
+    worldAbort?.abort();
+    worldAbort = new AbortController();
+    disposeWorldGroup();
+
+    trackData = buildTrack(worldGroup, circuitId, { abortSignal: worldAbort.signal });
+    trackUserData = trackData.trackCurve.userData as any;
+    waterMat = trackUserData.waterMaterial;
+    if (waterMat?.uniforms?.uSunDir) {
+      waterMat.uniforms.uSunDir.value.copy(sunDir);
+    }
+    asphaltMaterial = trackUserData.asphaltMaterial as THREE.MeshStandardMaterial | undefined;
+    curbMaterial = trackUserData.curbMaterial as THREE.MeshStandardMaterial | undefined;
+    tunnel = trackUserData.tunnel;
+    envTime = trackUserData.envTime;
+    trackPlayerPos = trackUserData.playerPos;
+    mountainMistUniform = trackUserData.mountainMistUniform as { value: number } | null | undefined;
+
+    const [cx, cz] = computeTrackCenterXZ(trackData);
+    setCloudCenter(cx, cz);
+    setHudCircuit(circuitId);
+    applyWeatherPreset(currentWeather);
+    fullRestartRace();
   }
 
   callbacks.onReady?.({
     setWeather: (w: WeatherType) => {
       applyWeatherPreset(w);
     },
-    startRace: (w: WeatherType) => {
+    setCircuit: (c: CircuitId) => {
+      switchCircuit(c);
+    },
+    startRace: (w: WeatherType, c?: CircuitId) => {
+      if (c && c !== currentCircuit) {
+        switchCircuit(c);
+      }
       applyWeatherPreset(w);
       waitingToStart = false;
       fullRestartRace();
     },
-    restartWithWeather: (w: WeatherType) => {
+    restartWithWeather: (w: WeatherType, c?: CircuitId) => {
+      if (c && c !== currentCircuit) {
+        switchCircuit(c);
+      }
       applyWeatherPreset(w);
       waitingToStart = false;
       fullRestartRace();
@@ -1679,9 +1809,10 @@ export function startMonacoEngine(
       scene.background.lerpColors(SKY_TARGET, TUNNEL_FOG, tunnelMix);
     }
     if (scene.fog instanceof THREE.Fog) {
+      const { near: activeFogNear, far: activeFogFar } = getFogRange();
       scene.fog.color.lerpColors(SKY_TARGET, TUNNEL_FOG, tunnelMix);
-      scene.fog.near = activePreset.fogNear + (18 - activePreset.fogNear) * tunnelMix;
-      scene.fog.far = activePreset.fogFar + (120 - activePreset.fogFar) * tunnelMix;
+      scene.fog.near = activeFogNear + (18 - activeFogNear) * tunnelMix;
+      scene.fog.far = activeFogFar + (120 - activeFogFar) * tunnelMix;
     } else if (scene.fog instanceof THREE.FogExp2) {
       scene.fog.color.lerpColors(SKY_TARGET, TUNNEL_FOG, tunnelMix);
       const tunnelExp = 0.013;
@@ -1699,10 +1830,11 @@ export function startMonacoEngine(
     skyDomeMat.uniforms.uSkyFade.value = 1 - tunnelMix;
     skyDomeMat.uniforms.uTime.value = elapsed;
 
+    const cc = getCenterOrFallback();
     for (const c of clouds) {
       c.mesh.position.x += c.speed * dt;
-      if (c.mesh.position.x > 1450) c.mesh.position.x = -750;
-      c.mesh.position.z = c.baseZ;
+      if (c.mesh.position.x > cc.x + 1100) c.mesh.position.x = cc.x - 1100;
+      c.mesh.position.z = cc.z + c.dz;
     }
 
     // Sync 3D gantry start lights
@@ -1714,7 +1846,9 @@ export function startMonacoEngine(
       });
     }
 
-    waterMat.uniforms.uTime.value = elapsed;
+    if (waterMat?.uniforms?.uTime) {
+      waterMat.uniforms.uTime.value = elapsed;
+    }
     if (envTime) envTime.value = elapsed;
     if (trackPlayerPos) trackPlayerPos.value.copy(playerCar.position);
     updateCamera(dt, carState, elapsed);
@@ -1784,8 +1918,13 @@ export function startMonacoEngine(
 
   frameId = requestAnimationFrame(tick);
 
+  function getCenterOrFallback() {
+    return getCloudCenter();
+  }
+
   return function cleanup() {
     disposed = true;
+    worldAbort?.abort();
     stopVictoryMusic();
     cancelAnimationFrame(frameId);
     clearTimeout(frameId);
@@ -1801,7 +1940,12 @@ export function startMonacoEngine(
       if (obj.material) {
         const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
         for (const m of mats) {
+          if (!m) continue;
           if (m.map) m.map.dispose();
+          if (m.bumpMap) m.bumpMap.dispose();
+          if (m.roughnessMap) m.roughnessMap.dispose();
+          if (m.normalMap) m.normalMap.dispose();
+          if (m.emissiveMap) m.emissiveMap.dispose();
           m.dispose();
         }
       }
