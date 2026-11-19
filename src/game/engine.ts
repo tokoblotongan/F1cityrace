@@ -319,11 +319,14 @@ export interface RaceFinishResult {
   playerPosition: number;
   bestLapTime: number | null;
   totalRaceTime: number;
+  gapText?: string;
+  isForcedFinish?: boolean;
 }
 
 export interface EngineCallbacks {
   onWebGLError?: (msg: string) => void;
   onRaceFinish?: (result: RaceFinishResult | null) => void;
+  onChequeredCountdown?: (secondsRemaining: number | null) => void;
 }
 
 export function startMonacoEngine(
@@ -814,6 +817,16 @@ export function startMonacoEngine(
   let frameId = 0;
   let prevHealth = 100;
   let prevFinished = false;
+  let chequeredCountdown: number | null = null;
+  let lastReportedCountdown: number | null = null;
+  let forcedFinish = false;
+  let forcedFinishState: {
+    playerPosition: number;
+    gapText: string;
+    bestLapTime: number | null;
+    totalRaceTime: number;
+    standings: any[];
+  } | null = null;
   let wallHitAudioCooldown = 0;
   let aiHitAudioCooldown = 0;
   const whooshTrackers = aiList.map(() => ({
@@ -822,8 +835,19 @@ export function startMonacoEngine(
     cooldown: 0,
   }));
 
+  function reportCountdown(val: number | null) {
+    if (val !== lastReportedCountdown) {
+      lastReportedCountdown = val;
+      callbacks.onChequeredCountdown?.(val);
+    }
+  }
+
   function fullRestartRace() {
     stopVictoryMusic();
+    chequeredCountdown = null;
+    forcedFinish = false;
+    forcedFinishState = null;
+    reportCountdown(null);
     callbacks.onRaceFinish?.(null);
     restartRace(allCars, trackData);
     resetCarHealth(playerCar);
@@ -880,14 +904,15 @@ export function startMonacoEngine(
     buildControls(dt);
 
     const playerP = playerCar.userData.physics;
-    if (controls.reset && (raceState?.isFinished || playerP.health <= 0)) {
+    if (controls.reset && (raceState?.isFinished || forcedFinish || playerP.health <= 0)) {
       fullRestartRace();
       controls.reset = false;
     }
 
+    const FROZEN_CONTROLS = { throttle: 0, brake: 1, steer: 0, drs: false, reset: false };
     const playerControls =
-      raceState?.phase === 'LIGHTS' || playerP.health <= 0
-        ? { throttle: 0, brake: 1, steer: 0, drs: false, reset: false }
+      raceState?.phase === 'LIGHTS' || playerP.health <= 0 || forcedFinish
+        ? FROZEN_CONTROLS
         : controls;
 
     accumulator += dt;
@@ -897,9 +922,14 @@ export function startMonacoEngine(
       aiHitAudioCooldown = Math.max(0, aiHitAudioCooldown - STEP);
       contactSparkCooldown = Math.max(0, contactSparkCooldown - STEP);
 
+      const stepControls =
+        raceState?.phase === 'LIGHTS' || playerP.health <= 0 || forcedFinish
+          ? FROZEN_CONTROLS
+          : controls;
+
       const hitBeforeWall = playerP.hit;
       const speedBeforeWall = playerP.speed;
-      carState = updateCarPhysics(playerCar, playerControls, trackData, STEP);
+      carState = updateCarPhysics(playerCar, stepControls, trackData, STEP);
       if (playerP.hit > hitBeforeWall + 0.04 && wallHitAudioCooldown <= 0) {
         const wallIntensity = Math.min(1, Math.max(0.2, Math.max(playerP.hit, speedBeforeWall / 75)));
         playCollisionSound(wallIntensity, true);
@@ -908,8 +938,40 @@ export function startMonacoEngine(
 
       raceState = updateAIRacers(aiList, allCars, trackData, STEP);
 
+      // Post-leader Chequered Flag 15s finish countdown / all-AI-finished check
+      if (raceState && !raceState.isFinished && !forcedFinish && playerP.health > 0 && raceState.phase === 'RACING') {
+        if (raceState.finishedCount >= 1) {
+          if (chequeredCountdown === null) {
+            chequeredCountdown = 15.0;
+          } else {
+            chequeredCountdown = Math.max(0, chequeredCountdown - STEP);
+          }
+          if (chequeredCountdown <= 0 || raceState.finishedCount >= aiList.length) {
+            forcedFinish = true;
+            chequeredCountdown = null;
+            const standingsCopy = Array.isArray(raceState.standings)
+              ? raceState.standings.map((e: any) =>
+                  e.isPlayer ? { ...e, finished: true } : { ...e }
+                )
+              : [];
+            const pEntry = standingsCopy.find((e: any) => e.isPlayer);
+            const pos = raceState.playerPosition || pEntry?.position || standingsCopy.length || 8;
+            const gapText = pEntry?.gapText || '+1 LAP';
+            forcedFinishState = {
+              playerPosition: pos,
+              gapText,
+              bestLapTime: raceState.bestLapTime ?? pEntry?.bestLapTime ?? null,
+              totalRaceTime: raceState.raceTime ?? 0,
+              standings: standingsCopy,
+            };
+          }
+        }
+      } else if (raceState?.isFinished || playerP.health <= 0) {
+        chequeredCountdown = null;
+      }
+
       // Process solid OBB car-to-car collision events (audio, damage, micro-shake, sparks)
-      if (raceState?.phase === 'RACING' && Array.isArray(raceState.collisionEvents)) {
+      if (!forcedFinish && raceState?.phase === 'RACING' && Array.isArray(raceState.collisionEvents)) {
         for (const ev of raceState.collisionEvents) {
           if (ev.isPlayerInvolved && playerP.health > 0) {
             if (aiHitAudioCooldown <= 0 && ev.closingSpeed > 2.6) {
@@ -957,7 +1019,7 @@ export function startMonacoEngine(
     if (steps === MAX_SUBSTEPS) accumulator = 0;
 
     // Opponent proximity & overtake Doppler whoosh detection
-    if (raceState?.phase === 'RACING' && playerP.health > 0) {
+    if (!forcedFinish && raceState?.phase === 'RACING' && playerP.health > 0) {
       const pfX = -Math.sin(playerP.yaw);
       const pfZ = -Math.cos(playerP.yaw);
       const prX = Math.cos(playerP.yaw);
@@ -1014,7 +1076,7 @@ export function startMonacoEngine(
           if (tok.group.scale.x < 0.999) {
             tok.group.scale.setScalar(Math.min(1, tok.group.scale.x + dt * 5));
           }
-          if (playerP.health > 0 && raceState?.phase === 'RACING') {
+          if (!forcedFinish && playerP.health > 0 && raceState?.phase === 'RACING') {
             const dx = playerCar.position.x - tok.basePos.x;
             const dz = playerCar.position.z - tok.basePos.z;
             if (dx * dx + dz * dz < 6.76) {
@@ -1089,9 +1151,23 @@ export function startMonacoEngine(
     updateAudio(audioCarState);
 
     if (prevHealth > 0 && playerP.health <= 0 && !prevFinished) {
+      reportCountdown(null);
       playGameOverSound();
     }
     prevHealth = playerP.health;
+
+    if (forcedFinish && forcedFinishState && raceState) {
+      raceState.isFinished = true;
+      raceState.phase = 'FINISHED';
+      raceState.playerPosition = forcedFinishState.playerPosition;
+      raceState.standings = forcedFinishState.standings;
+      reportCountdown(null);
+    } else if (chequeredCountdown !== null && raceState && !raceState.isFinished && playerP.health > 0) {
+      raceState.phase = 'FINISHED';
+      reportCountdown(Math.max(1, Math.ceil(chequeredCountdown)));
+    } else {
+      reportCountdown(null);
+    }
 
     const isFinishedNow = !!(raceState && raceState.isFinished);
     if (!prevFinished && isFinishedNow && playerP.health > 0) {
@@ -1102,8 +1178,14 @@ export function startMonacoEngine(
         : null;
       callbacks.onRaceFinish?.({
         playerPosition: playerPos,
-        bestLapTime: raceState.bestLapTime ?? playerEntry?.bestLapTime ?? null,
-        totalRaceTime: playerEntry?.finishTime ?? raceState.raceTime ?? 0,
+        bestLapTime: forcedFinishState
+          ? forcedFinishState.bestLapTime
+          : raceState.bestLapTime ?? playerEntry?.bestLapTime ?? null,
+        totalRaceTime: forcedFinishState
+          ? forcedFinishState.totalRaceTime
+          : playerEntry?.finishTime ?? raceState.raceTime ?? 0,
+        gapText: forcedFinishState ? forcedFinishState.gapText : playerEntry?.gapText,
+        isForcedFinish: forcedFinish,
       });
     } else if (prevFinished && !isFinishedNow) {
       callbacks.onRaceFinish?.(null);

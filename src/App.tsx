@@ -125,6 +125,7 @@ export default function App() {
   const [savedRecordId, setSavedRecordId] = useState<string | null>(null);
   const [savedDriverName, setSavedDriverName] = useState<string | null>(null);
   const [showHallOfFameModal, setShowHallOfFameModal] = useState(false);
+  const [chequeredCountdown, setChequeredCountdown] = useState<number | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -157,10 +158,12 @@ export default function App() {
     const cleanupHud = initHud();
     const cleanupEngine = startMonacoEngine(canvas, {
       onWebGLError: (msg) => setWebglError(msg),
+      onChequeredCountdown: (sec) => setChequeredCountdown(sec),
       onRaceFinish: (result) => {
         setFinishResult(result);
         setSavedRecordId(null);
         setSavedDriverName(null);
+        setChequeredCountdown(null);
         if (result) {
           setShowHallOfFameModal(false);
           setDriverName((prev) => prev || loadLastDriverName());
@@ -175,15 +178,34 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!finishResult || !savedDriverName) return;
-    applyDriverNameToFinishDom(savedDriverName);
+    if (!finishResult) return;
+    if (finishResult.isForcedFinish) {
+      const titleEl = document.getElementById('finish-title');
+      const forcedTitle = `P${finishResult.playerPosition} — ${finishResult.gapText || 'TIME EXPIRED'}`;
+      if (titleEl && titleEl.textContent !== forcedTitle) {
+        titleEl.textContent = forcedTitle;
+      }
+    }
+    if (savedDriverName) {
+      applyDriverNameToFinishDom(savedDriverName);
+    }
     const podiumEl = document.getElementById('podium');
     const rowsEl = document.getElementById('finish-rows');
+    const titleEl = document.getElementById('finish-title');
     const observer = new MutationObserver(() => {
-      applyDriverNameToFinishDom(savedDriverName);
+      if (finishResult.isForcedFinish && titleEl) {
+        const forcedTitle = `P${finishResult.playerPosition} — ${finishResult.gapText || 'TIME EXPIRED'}`;
+        if (titleEl.textContent !== forcedTitle) titleEl.textContent = forcedTitle;
+      }
+      if (savedDriverName) {
+        applyDriverNameToFinishDom(savedDriverName);
+      }
     });
     if (podiumEl) observer.observe(podiumEl, { childList: true, subtree: true });
     if (rowsEl) observer.observe(rowsEl, { childList: true, subtree: true });
+    if (finishResult.isForcedFinish && titleEl) {
+      observer.observe(titleEl, { childList: true, characterData: true, subtree: true });
+    }
     return () => observer.disconnect();
   }, [finishResult, savedDriverName]);
 
@@ -472,6 +494,41 @@ export default function App() {
           )}
         </button>
 
+        {/* Chequered Flag post-leader countdown warning banner */}
+        {chequeredCountdown !== null && !finishResult && (
+          <div
+            role="status"
+            aria-live="polite"
+            className={`pointer-events-none fixed top-[52px] left-1/2 -translate-x-1/2 z-20 flex flex-col items-center px-4 py-2 rounded-lg border backdrop-blur-md shadow-2xl ${
+              chequeredCountdown <= 5
+                ? 'bg-[#2a0909]/90 border-[#ff2d1a]/80 shadow-[0_0_26px_rgba(255,45,26,0.45)] animate-pulse'
+                : 'bg-[#0b0f16]/90 border-[#ffb020]/75 shadow-[0_0_24px_rgba(255,176,32,0.28)]'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className="grid grid-cols-2 grid-rows-2 w-3 h-3 rounded-[2px] border border-white/40 overflow-hidden shrink-0"
+                aria-hidden="true"
+              >
+                <span className="bg-[#f2efe6]" />
+                <span className="bg-[#0b0f16]" />
+                <span className="bg-[#0b0f16]" />
+                <span className="bg-[#f2efe6]" />
+              </span>
+              <span
+                className={`text-xs font-black italic tracking-[0.16em] tabular-nums ${
+                  chequeredCountdown <= 5 ? 'text-[#ff6a55]' : 'text-[#ffb020]'
+                }`}
+              >
+                LEADER FINISHED — {chequeredCountdown}s REMAINING
+              </span>
+            </div>
+            <span className="mt-0.5 text-[9px] font-bold tracking-[0.22em] text-[#f2efe6]/70">
+              CHEQUERED FLAG · CROSS FINISH LINE TO COMPLETE RACE
+            </span>
+          </div>
+        )}
+
         {/* Touch controls (coarse pointers only) */}
         <div id="touch">
           <div id="touch-left">
@@ -539,8 +596,8 @@ export default function App() {
           <div id="finish-sub">CIRCUIT DE MONACO · 3 LAPS</div>
           <div id="podium" />
 
-          {/* Podium Name Entry Form (only when playerPosition <= 3) */}
-          {finishResult && finishResult.playerPosition <= 3 && (
+          {/* Podium Name Entry Form (only when playerPosition <= 3 and finished full race) */}
+          {finishResult && !finishResult.isForcedFinish && finishResult.playerPosition <= 3 && (
             <form
               onSubmit={handleSaveRecord}
               className="mb-4 rounded-lg border border-[#d8b24a]/40 bg-[#070a10]/85 px-3.5 py-2.5 text-left"
