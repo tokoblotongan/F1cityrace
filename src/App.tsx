@@ -180,6 +180,15 @@ export default function App() {
               </div>
             </div>
           </div>
+          <div id="health-wrap">
+            <div id="health-head">
+              <span id="health-label">CAR INTEGRITY</span>
+              <span id="health-value" className="mono">100%</span>
+            </div>
+            <div id="health-track">
+              <div id="health-fill" />
+            </div>
+          </div>
         </section>
 
         {/* Bottom-center · control legend */}
@@ -228,6 +237,32 @@ export default function App() {
           <div id="podium" />
           <div id="finish-rows" />
           <button id="race-again">
+            RACE AGAIN <span className="key-cap">R</span>
+          </button>
+        </div>
+      </div>
+
+      {/* DNF · terminal car damage Game Over modal */}
+      <div id="gameover-modal" role="dialog" aria-modal="true" aria-labelledby="gameover-title">
+        <div id="gameover-card" className="panel">
+          <div id="gameover-kicker">TERMINAL CAR DAMAGE · MONACO GP</div>
+          <h1 id="gameover-title">GAME OVER — DNF</h1>
+          <div id="gameover-sub">CHASSIS INTEGRITY FAILED · RETIRED FROM RACE</div>
+          <div id="dnf-stats">
+            <div className="dnf-stat">
+              <label>LAP REACHED</label>
+              <span id="dnf-lap" className="mono">LAP 1 / 3</span>
+            </div>
+            <div className="dnf-stat">
+              <label>SURVIVAL TIME</label>
+              <span id="dnf-time" className="mono">0:00.000</span>
+            </div>
+            <div className="dnf-stat">
+              <label>POSITION</label>
+              <span id="dnf-pos" className="mono">P8</span>
+            </div>
+          </div>
+          <button id="dnf-race-again">
             RACE AGAIN <span className="key-cap">R</span>
           </button>
         </div>

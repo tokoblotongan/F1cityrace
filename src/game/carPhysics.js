@@ -106,30 +106,70 @@ function getCarbonWeaveCanvas() {
   return c;
 }
 
+function drawSteeringOled(g, speedKmh, gear, rpm, drsAvailable, drsActive, isBraking, isSliding) {
+  const W = 256;
+  const H = 128;
+  g.fillStyle = '#070b12';
+  g.fillRect(0, 0, W, H);
+
+  // Outer subtle OLED bezel border
+  g.strokeStyle = '#1e293b';
+  g.lineWidth = 3;
+  g.strokeRect(2, 2, W - 4, H - 4);
+
+  // 15 dynamic RPM shift LEDs across top strip
+  const rpmFrac = clamp((rpm - 4300) / 7950, 0, 1);
+  const activeLeds = Math.round(rpmFrac * 15);
+  for (let i = 0; i < 15; i++) {
+    const lit = i < activeLeds;
+    const onCol = i < 5 ? '#22ff88' : i < 10 ? '#ff3b1f' : '#38bdf8';
+    g.fillStyle = lit ? onCol : '#182230';
+    g.fillRect(11 + i * 16, 8, 12, 11);
+  }
+
+  // Thin divider line
+  g.fillStyle = '#00d2be';
+  g.fillRect(10, 24, W - 20, 2);
+
+  // Left DRS / BRAKE status box
+  g.fillStyle = drsActive ? '#22ff88' : drsAvailable ? '#facc15' : '#151e2c';
+  g.fillRect(12, 34, 62, 28);
+  g.fillStyle = drsActive || drsAvailable ? '#05080d' : '#64748b';
+  g.font = '900 16px monospace';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText('DRS', 43, 48);
+
+  // Right SLIP / BRK pill
+  g.fillStyle = isBraking ? '#ef4444' : isSliding ? '#f97316' : '#151e2c';
+  g.fillRect(W - 74, 34, 62, 28);
+  g.fillStyle = isBraking || isSliding ? '#ffffff' : '#64748b';
+  g.fillText(isBraking ? 'BRK' : isSliding ? 'SLIP' : 'GRIP', W - 43, 48);
+
+  // Center Gear Display
+  g.fillStyle = '#f8fafc';
+  g.font = '900 48px monospace';
+  g.fillText(String(gear), W * 0.5, 56);
+
+  // Bottom Speed KM/H & RPM bar
+  g.fillStyle = '#38bdf8';
+  g.font = '900 28px monospace';
+  g.fillText(`${String(Math.round(speedKmh)).padStart(3, '0')} KM/H`, W * 0.5, 96);
+
+  // Lower RPM progress meter
+  g.fillStyle = '#111827';
+  g.fillRect(14, 113, W - 28, 8);
+  g.fillStyle = rpmFrac > 0.85 ? '#ef4444' : rpmFrac > 0.6 ? '#facc15' : '#22ff88';
+  g.fillRect(14, 113, Math.round((W - 28) * rpmFrac), 8);
+}
+
 function getSteeringWheelCanvas() {
   if (cachedSteerCanvas) return cachedSteerCanvas;
   const c = document.createElement('canvas');
-  c.width = 128;
-  c.height = 64;
+  c.width = 256;
+  c.height = 128;
   const g = c.getContext('2d');
-  g.fillStyle = '#090d14';
-  g.fillRect(0, 0, 128, 64);
-  // Shift LED bar across top
-  const leds = ['#22ff88', '#22ff88', '#22ff88', '#ff2d1a', '#ff2d1a', '#3b82f6', '#3b82f6'];
-  leds.forEach((col, i) => {
-    g.fillStyle = col;
-    g.fillRect(10 + i * 16, 4, 12, 5);
-  });
-  // Gear + speed readout
-  g.fillStyle = '#00d2be';
-  g.fillRect(8, 14, 112, 2);
-  g.fillStyle = '#f8f5ec';
-  g.font = '900 26px monospace';
-  g.textAlign = 'center';
-  g.fillText('7  312', 64, 44);
-  g.fillStyle = '#22ff88';
-  g.font = '700 10px monospace';
-  g.fillText('ERS 94%   DRS', 64, 58);
+  drawSteeringOled(g, 0, 1, 4300, false, false, false, false);
   cachedSteerCanvas = c;
   return c;
 }
@@ -449,7 +489,7 @@ export function createF1Car(colorHex = 0xe10600, isPlayer = false) {
     { z: -1.22, cy: 0.38, rx: 0.255, ryTop: 0.155, ryBot: 0.125 },
     { z: -0.68, cy: 0.44, rx: 0.315, ryTop: 0.195, ryBot: 0.165 },
     { z: -0.36, cy: 0.46, rx: 0.34,  ryTop: 0.21,  ryBot: 0.18 },
-  ], 32);
+  ], 40);
   const nose = new THREE.Mesh(noseGeo, paintMat);
   nose.castShadow = true;
   nose.receiveShadow = true;
@@ -462,41 +502,64 @@ export function createF1Car(colorHex = 0xe10600, isPlayer = false) {
       { z: -0.05, cy: 0.32, rx: 0.38, ryTop: 0.17, ryBot: 0.17 },
       { z:  0.35, cy: 0.34, rx: 0.34, ryTop: 0.19, ryBot: 0.18 },
       { z:  0.75, cy: 0.36, rx: 0.28, ryTop: 0.20, ryBot: 0.19 },
-    ], 32),
+    ], 40),
     paintMat
   );
   tubLower.castShadow = true;
   car.add(tubLower);
 
-  // Left & Right sculpted cockpit coaming rails
+  // Left & Right smooth curved cockpit coaming rails (zero jagged polygons in cockpit view)
   [-1, 1].forEach((side) => {
     const railShape = new THREE.Shape();
-    railShape.moveTo(-0.46, 0.44);
-    railShape.lineTo(-0.18, 0.56);
-    railShape.lineTo(0.24, 0.62);
-    railShape.lineTo(0.28, 0.42);
-    railShape.lineTo(-0.44, 0.36);
+    railShape.moveTo(-0.48, 0.43);
+    railShape.quadraticCurveTo(-0.32, 0.54, -0.14, 0.58);
+    railShape.quadraticCurveTo(0.08, 0.62, 0.25, 0.62);
+    railShape.quadraticCurveTo(0.30, 0.52, 0.28, 0.41);
+    railShape.quadraticCurveTo(-0.10, 0.36, -0.48, 0.36);
     railShape.closePath();
     const railGeo = new THREE.ExtrudeGeometry(railShape, {
-      depth: 0.08,
+      depth: 0.075,
       bevelEnabled: true,
-      bevelThickness: 0.025,
-      bevelSize: 0.02,
-      bevelSegments: 3,
+      bevelThickness: 0.026,
+      bevelSize: 0.022,
+      bevelSegments: 6,
+      curveSegments: 24,
     });
     railGeo.rotateY(-Math.PI / 2);
     const rail = new THREE.Mesh(railGeo, solidPaintMat);
-    rail.position.set(side * 0.27 + 0.04, 0, 0);
+    rail.position.set(side * 0.275 + 0.0375, 0, 0);
     rail.castShadow = true;
     car.add(rail);
   });
 
-  // Interior carbon cockpit floor & seat headrest
-  const cockpitWell = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.18, 0.72), darkIntakeMat);
+  // Interior carbon cockpit floor & padded U-shaped carbon headrest collar
+  const cockpitWell = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.18, 0.76), darkIntakeMat);
   cockpitWell.position.set(0, 0.36, -0.08);
-  const headrest = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.22, 0.22), carbonMat);
-  headrest.position.set(0, 0.59, 0.18);
-  car.add(cockpitWell, headrest);
+  const collarCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-0.23, 0.58, -0.04),
+    new THREE.Vector3(-0.22, 0.63, 0.10),
+    new THREE.Vector3(-0.12, 0.66, 0.21),
+    new THREE.Vector3(0, 0.67, 0.24),
+    new THREE.Vector3(0.12, 0.66, 0.21),
+    new THREE.Vector3(0.22, 0.63, 0.10),
+    new THREE.Vector3(0.23, 0.58, -0.04),
+  ]);
+  const headrestCollarMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1f28,
+    map: carbonTex,
+    roughness: 0.62,
+    metalness: 0.12,
+  });
+  const headrestCollar = new THREE.Mesh(
+    new THREE.TubeGeometry(collarCurve, 32, 0.056, 14, false),
+    headrestCollarMat
+  );
+  const headrestBack = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.17, 0.19, 0.18, 24, 1, false, -Math.PI * 0.45, Math.PI * 0.9),
+    headrestCollarMat
+  );
+  headrestBack.position.set(0, 0.60, 0.14);
+  car.add(cockpitWell, headrestCollar, headrestBack);
 
   // --- 3. Sculpted Undercut Sidepods, Air Intakes, Engine Cover, Shark Fin & T-Cam ---
   [-1, 1].forEach((side) => {
@@ -508,7 +571,7 @@ export function createF1Car(colorHex = 0xe10600, isPlayer = false) {
       { z:  0.98, cx: side * 0.41, cy: 0.36, rx: 0.20, ryTop: 0.15, ryBot: 0.15, minY: 0.15 },
       { z:  1.48, cx: side * 0.26, cy: 0.32, rx: 0.13, ryTop: 0.12, ryBot: 0.12, minY: 0.15 },
       { z:  1.86, cx: side * 0.14, cy: 0.30, rx: 0.08, ryTop: 0.09, ryBot: 0.09, minY: 0.15 },
-    ], 32);
+    ], 40);
     const pod = new THREE.Mesh(podGeo, paintMat);
     pod.castShadow = true;
     pod.receiveShadow = true;
@@ -531,7 +594,7 @@ export function createF1Car(colorHex = 0xe10600, isPlayer = false) {
     { z:  0.95, cy: 0.59, rx: 0.19, ryTop: 0.21, ryBot: 0.20 },
     { z:  1.45, cy: 0.48, rx: 0.14, ryTop: 0.15, ryBot: 0.15 },
     { z:  1.92, cy: 0.41, rx: 0.09, ryTop: 0.09, ryBot: 0.09 },
-  ], 32);
+  ], 40);
   const engineCover = new THREE.Mesh(engGeo, paintMat);
   engineCover.castShadow = true;
   engineCover.receiveShadow = true;
@@ -636,50 +699,160 @@ export function createF1Car(colorHex = 0xe10600, isPlayer = false) {
   });
   car.add(fwGroup);
 
-  // --- 5. Titanium Halo, Cockpit Steering Wheel & Driver Helmet ---
+  // --- 5. Sleek Titanium + Carbon-Weave Halo, Ergonomic Steering Wheel & Driver Helmet ---
+  const haloCarbonMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff,
+    map: carbonTex,
+    roughness: 0.28,
+    metalness: 0.45,
+    clearcoat: 0.85,
+    clearcoatRoughness: 0.12,
+    envMapIntensity: 0.9,
+  });
+  const haloMetalMat = new THREE.MeshPhysicalMaterial({
+    color: 0x525a66,
+    roughness: 0.22,
+    metalness: 0.9,
+    clearcoat: 0.55,
+    clearcoatRoughness: 0.14,
+    envMapIntensity: 1.0,
+  });
+
   const haloCurve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(-0.27, 0.60, 0.14),
-    new THREE.Vector3(-0.29, 0.77, -0.14),
-    new THREE.Vector3(-0.18, 0.78, -0.45),
-    new THREE.Vector3(0, 0.75, -0.58),
-    new THREE.Vector3(0.18, 0.78, -0.45),
-    new THREE.Vector3(0.29, 0.77, -0.14),
-    new THREE.Vector3(0.27, 0.60, 0.14),
+    new THREE.Vector3(-0.265, 0.59, 0.14),
+    new THREE.Vector3(-0.285, 0.77, -0.14),
+    new THREE.Vector3(-0.185, 0.79, -0.45),
+    new THREE.Vector3(0, 0.765, -0.60),
+    new THREE.Vector3(0.185, 0.79, -0.45),
+    new THREE.Vector3(0.285, 0.77, -0.14),
+    new THREE.Vector3(0.265, 0.59, 0.14),
   ]);
   const haloRing = new THREE.Mesh(
-    new THREE.TubeGeometry(haloCurve, 36, 0.028, 12, false),
-    titaniumMat
+    new THREE.TubeGeometry(haloCurve, 48, 0.020, 16, false),
+    haloCarbonMat
   );
   haloRing.castShadow = true;
+
+  // Sleek titanium inner highlight rail along Halo upper arch
+  const haloCore = new THREE.Mesh(
+    new THREE.TubeGeometry(haloCurve, 44, 0.015, 12, false),
+    haloMetalMat
+  );
+  haloCore.position.y = 0.006;
+
+  // Slim aerodynamic forward central V-pillar (unobtrusive in cockpit view)
   const pillarCurve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(0, 0.56, -0.64),
-    new THREE.Vector3(0, 0.67, -0.60),
-    new THREE.Vector3(0, 0.75, -0.57),
+    new THREE.Vector3(0, 0.555, -0.65),
+    new THREE.Vector3(0, 0.675, -0.62),
+    new THREE.Vector3(0, 0.765, -0.595),
   ]);
   const haloPillar = new THREE.Mesh(
-    new THREE.TubeGeometry(pillarCurve, 12, 0.024, 10, false),
-    titaniumMat
+    new THREE.TubeGeometry(pillarCurve, 18, 0.016, 14, false),
+    haloCarbonMat
   );
-  car.add(haloRing, haloPillar);
+  haloPillar.castShadow = true;
 
-  // F1 Steering wheel with glowing telemetry LCD screen inside cockpit
+  // Rear Halo titanium fairing collars at cockpit coaming mounts
+  [-1, 1].forEach((side) => {
+    const mount = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.032, 0.07, 16), haloMetalMat);
+    mount.position.set(side * 0.268, 0.60, 0.13);
+    mount.rotation.x = 0.35;
+    car.add(mount);
+  });
+  car.add(haloRing, haloCore, haloPillar);
+
+  // Sculpted F1 Steering Wheel with ergonomic grips, rotary dials, paddles & live OLED telemetry screen
   const steerGroup = new THREE.Group();
-  steerGroup.position.set(0, 0.59, -0.42);
-  steerGroup.rotation.x = -0.35;
-  const wheelBody = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.14, 0.03), carbonMat);
-  const steerTex = new THREE.CanvasTexture(getSteeringWheelCanvas());
+  steerGroup.position.set(0, 0.585, -0.42);
+  steerGroup.rotation.x = -0.34;
+
+  // Butterfly carbon-fiber steering wheel plate
+  const wheelShape = new THREE.Shape();
+  wheelShape.moveTo(-0.125, -0.052);
+  wheelShape.quadraticCurveTo(-0.07, -0.072, 0, -0.072);
+  wheelShape.quadraticCurveTo(0.07, -0.072, 0.125, -0.052);
+  wheelShape.quadraticCurveTo(0.145, 0, 0.125, 0.056);
+  wheelShape.quadraticCurveTo(0.07, 0.074, 0, 0.072);
+  wheelShape.quadraticCurveTo(-0.07, 0.074, -0.125, 0.056);
+  wheelShape.quadraticCurveTo(-0.145, 0, -0.125, -0.052);
+  const wheelPlateGeo = new THREE.ExtrudeGeometry(wheelShape, {
+    depth: 0.022,
+    bevelEnabled: true,
+    bevelThickness: 0.005,
+    bevelSize: 0.004,
+    bevelSegments: 3,
+    curveSegments: 20,
+  });
+  wheelPlateGeo.translate(0, 0, -0.011);
+  const wheelBody = new THREE.Mesh(wheelPlateGeo, haloCarbonMat);
+
+  // Contoured Alcantara left & right hand grips
+  const gripMat = new THREE.MeshStandardMaterial({ color: 0x15171d, roughness: 0.92, metalness: 0.05 });
+  [-1, 1].forEach((side) => {
+    const gripCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(side * 0.118, -0.052, 0.002),
+      new THREE.Vector3(side * 0.132, 0, 0.005),
+      new THREE.Vector3(side * 0.118, 0.052, 0.002),
+    ]);
+    const grip = new THREE.Mesh(new THREE.TubeGeometry(gripCurve, 16, 0.017, 12, false), gripMat);
+    steerGroup.add(grip);
+
+    // Carbon shift paddle behind wheel
+    const paddle = new THREE.Mesh(new THREE.BoxGeometry(0.042, 0.022, 0.006), haloCarbonMat);
+    paddle.position.set(side * 0.088, 0.01, -0.022);
+    paddle.rotation.y = side * -0.18;
+    steerGroup.add(paddle);
+  });
+
+  // 6 colorful anodized rotary dials & thumb switches facing driver (+Z)
+  const dialSpecs = [
+    { x: -0.048, y: -0.044, c: 0xef4444 },
+    { x: 0,      y: -0.047, c: 0xfacc15 },
+    { x: 0.048,  y: -0.044, c: 0x00d2be },
+    { x: -0.082, y: -0.014, c: 0x38bdf8 },
+    { x: 0.082,  y: -0.014, c: 0xf97316 },
+    { x: -0.082, y: 0.024,  c: 0x22c55e },
+  ];
+  const dialGeo = new THREE.CylinderGeometry(0.0085, 0.0095, 0.010, 14);
+  dialGeo.rotateX(Math.PI / 2);
+  for (const ds of dialSpecs) {
+    const dial = new THREE.Mesh(
+      dialGeo,
+      new THREE.MeshStandardMaterial({ color: ds.c, roughness: 0.35, metalness: 0.4 })
+    );
+    dial.position.set(ds.x, ds.y, 0.015);
+    steerGroup.add(dial);
+  }
+
+  // Dedicated live glowing OLED telemetry canvas for player car (shared static for AI)
+  let oledCanvas = null;
+  let oledCtx = null;
+  let steerTex;
+  if (isPlayer) {
+    oledCanvas = document.createElement('canvas');
+    oledCanvas.width = 256;
+    oledCanvas.height = 128;
+    oledCtx = oledCanvas.getContext('2d');
+    drawSteeringOled(oledCtx, 0, 1, 4300, false, false, false, false);
+    steerTex = new THREE.CanvasTexture(oledCanvas);
+  } else {
+    steerTex = new THREE.CanvasTexture(getSteeringWheelCanvas());
+  }
   steerTex.colorSpace = THREE.SRGBColorSpace;
+  steerTex.anisotropy = 4;
+
   const steerLcdMat = new THREE.MeshStandardMaterial({
     map: steerTex,
     emissiveMap: steerTex,
     emissive: 0xffffff,
-    emissiveIntensity: 0.9,
-    roughness: 0.2,
+    emissiveIntensity: 1.05,
+    roughness: 0.14,
   });
-  const wheelScreen = new THREE.Mesh(new THREE.PlaneGeometry(0.13, 0.065), steerLcdMat);
-  wheelScreen.position.set(0, 0.015, 0.017);
-  wheelScreen.rotation.y = Math.PI;
-  steerGroup.add(wheelBody, wheelScreen);
+  const wheelScreen = new THREE.Mesh(new THREE.PlaneGeometry(0.115, 0.058), steerLcdMat);
+  wheelScreen.position.set(0, 0.016, 0.017);
+  const wheelBezel = new THREE.Mesh(new THREE.BoxGeometry(0.124, 0.066, 0.006), haloMetalMat);
+  wheelBezel.position.set(0, 0.016, 0.013);
+  steerGroup.add(wheelBody, wheelBezel, wheelScreen);
   car.add(steerGroup);
 
   // Detailed Driver Helmet (32x24 sphere + curved wrap-around visor + aero spoiler)
@@ -929,7 +1102,36 @@ export function createF1Car(colorHex = 0xe10600, isPlayer = false) {
   contactShadow.position.y = 0.02;
   car.add(contactShadow);
 
-  car.userData.parts = { helmet, drsFlap, wheels, frontPivots, rearLight, brakeDiscMats };
+  // --- 10. Emerald Repair Aura Ring (flashes when collecting trackside Repair Coins) ---
+  const auraGeo = new THREE.RingGeometry(1.15, 2.05, 40);
+  auraGeo.rotateX(-Math.PI / 2);
+  const auraMat = new THREE.MeshBasicMaterial({
+    color: 0x22ff88,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const repairAura = new THREE.Mesh(auraGeo, auraMat);
+  repairAura.position.y = 0.08;
+  repairAura.visible = false;
+  car.add(repairAura);
+
+  car.userData.parts = {
+    helmet,
+    drsFlap,
+    wheels,
+    frontPivots,
+    rearLight,
+    brakeDiscMats,
+    steerGroup,
+    repairAura,
+    oledCtx,
+    oledTex: steerTex,
+    oledTimer: 0,
+    oledKey: '',
+  };
   car.userData.physics = {
     speed: 0,
     slip: 0,
@@ -941,9 +1143,40 @@ export function createF1Car(colorHex = 0xe10600, isPlayer = false) {
     lastIdx: 0,
     yaw: 0,
     initialized: false,
+    health: 100,
+    damageCooldown: 0,
+    repairFlash: 0,
   };
 
   return car;
+}
+
+export function applyCarDamage(car, impactSpeed) {
+  const P = car?.userData?.physics;
+  if (!P || !car.userData.isPlayer || P.health <= 0 || P.damageCooldown > 0) return 0;
+  if (impactSpeed <= 15) return 0;
+  const damage = clamp((impactSpeed - 15) * 0.35, 3, 25);
+  P.health = Math.max(0, P.health - damage);
+  P.damageCooldown = 0.6;
+  P.hit = Math.max(P.hit, clamp(damage / 18, 0.32, 1.0));
+  return damage;
+}
+
+export function applyCarRepair(car, amount = 20) {
+  const P = car?.userData?.physics;
+  if (!P || P.health <= 0) return false;
+  P.health = Math.min(100, P.health + amount);
+  P.repairFlash = 1.0;
+  return true;
+}
+
+export function resetCarHealth(car) {
+  const P = car?.userData?.physics;
+  if (!P) return;
+  P.health = 100;
+  P.damageCooldown = 0;
+  P.repairFlash = 0;
+  P.hit = 0;
 }
 
 function findNearestIndex(posArr, x, z, hintIdx, N) {
@@ -1009,12 +1242,27 @@ export function updateCarPhysics(car, controls, trackData, dt) {
     P.u = resetIdx / N;
     P.yaw = Math.atan2(-t.x, -t.z);
     P.initialized = true;
+    if (controls?.fullReset) {
+      P.health = 100;
+      P.damageCooldown = 0;
+      P.repairFlash = 0;
+    }
     car.rotation.set(Math.asin(clamp(t.y, -1, 1)), P.yaw, 0);
   }
 
-  const thr = clamp(controls?.throttle ?? 0, 0, 1);
-  const brk = clamp(controls?.brake ?? 0, 0, 1);
-  const steer = clamp(controls?.steer ?? 0, -1, 1);
+  if (dt > 0) {
+    P.damageCooldown = Math.max(0, (P.damageCooldown || 0) - dt);
+    P.repairFlash = Math.max(0, (P.repairFlash || 0) - dt * 1.6);
+  }
+
+  const h = car.userData.isPlayer ? P.health : 100;
+  const isDead = car.userData.isPlayer && h <= 0;
+  const speedMult = h >= 70 ? 1.0 : h >= 35 ? 0.92 : h > 0 ? 0.8 : 0;
+  const gripMult = h >= 70 ? 1.0 : h >= 35 ? 0.97 : h > 0 ? 0.8 : 0.4;
+
+  const thr = isDead ? 0 : clamp(controls?.throttle ?? 0, 0, 1);
+  const brk = isDead ? 1 : clamp(controls?.brake ?? 0, 0, 1);
+  const steer = isDead ? 0 : clamp(controls?.steer ?? 0, -1, 1);
 
   let inDrsZone = false;
   for (const z of trackData.drsZones) {
@@ -1023,21 +1271,22 @@ export function updateCarPhysics(car, controls, trackData, dt) {
       break;
     }
   }
-  const drsAvailable = inDrsZone && P.speed > 24;
-  const drsActive = !!(controls?.drs && drsAvailable && brk < 0.15);
+  const drsAvailable = !isDead && inDrsZone && P.speed > 24;
+  const drsActive = !!(!isDead && controls?.drs && drsAvailable && brk < 0.15);
 
   if (dt > 0) {
-    // Longitudinal F1 powertrain + aero drag + braking
-    const maxV = TOP_SPEED * (drsActive ? 1.1 : 1.0);
-    const accelPower = thr * (30 - 0.18 * P.speed);
+    // Longitudinal F1 powertrain + progressive damage speed penalty + aero drag + braking
+    const maxV = isDead ? 0 : TOP_SPEED * speedMult * (drsActive ? 1.1 : 1.0);
+    const accelPower = isDead ? 0 : thr * (30 * speedMult - 0.18 * P.speed);
     const aeroDrag = 0.0032 * P.speed * P.speed + 0.12 * P.speed;
     const brakeForce = brk * 42;
     const rolling = 0.45;
 
-    P.speed = clamp(P.speed + (accelPower - brakeForce - aeroDrag - rolling) * dt, 0, maxV);
+    P.speed = clamp(P.speed + (accelPower - brakeForce - aeroDrag - rolling) * dt, 0, Math.max(0, maxV || P.speed));
+    if (isDead && P.speed < 0.25) P.speed = 0;
 
-    // Downforce-scaled steering & lateral grip
-    const maxLatA = A0 + A1 * P.speed * P.speed;
+    // Downforce-scaled steering & progressive cornering grip penalty
+    const maxLatA = (A0 + A1 * P.speed * P.speed) * gripMult;
     const steerRadiusScale = 1 / (1 + P.speed * 0.021);
     const maxYawRate = Math.min(2.35 * steerRadiusScale, maxLatA / Math.max(P.speed, 6));
     const yawDelta = steer * maxYawRate * dt * (P.speed > 0.5 ? Math.min(1, P.speed / 5) : 0);
@@ -1074,8 +1323,13 @@ export function updateCarPhysics(car, controls, trackData, dt) {
     car.position.z += r.z * corr;
 
     const tangentYaw = Math.atan2(-t.x, -t.z);
-    const wallImpact = clamp((Math.abs(wrapAngle(P.yaw - tangentYaw)) * P.speed) / 28, 0.15, 1);
+    const yawErr = Math.abs(wrapAngle(P.yaw - tangentYaw));
+    const wallImpact = clamp((yawErr * P.speed) / 28, 0.15, 1);
     if (P.speed > 12) P.hit = Math.max(P.hit, wallImpact);
+    if (car.userData.isPlayer && P.speed > 15 && (yawErr > 0.08 || P.speed > 26)) {
+      const impactSpeed = P.speed * clamp(0.42 + yawErr * 0.95, 0.42, 1.0);
+      if (impactSpeed > 15) applyCarDamage(car, impactSpeed);
+    }
     P.speed *= 0.92;
     P.yaw = wrapAngle(P.yaw + wrapAngle(tangentYaw - P.yaw) * 0.45);
   }
@@ -1086,9 +1340,10 @@ export function updateCarPhysics(car, controls, trackData, dt) {
   car.rotation.order = 'YXZ';
   car.rotation.set(slopePitch, P.yaw, rollBank);
 
-  // Visual animations (wheels, steer, DRS flap, FIA rain light, glowing brake discs)
+  // Visual animations (wheels, steer, steering wheel, DRS flap, FIA rain light, glowing brake discs, repair aura)
   P.steerVis += (steer * 0.38 - P.steerVis) * Math.min(1, 14 * Math.max(dt, 0.016));
   for (const fp of parts.frontPivots) fp.rotation.y = P.steerVis;
+  if (parts.steerGroup) parts.steerGroup.rotation.z = P.steerVis * 1.15;
   const wheelSpin = (P.speed / 0.36) * dt;
   for (const w of parts.wheels) w.rotation.x -= wheelSpin;
 
@@ -1096,7 +1351,7 @@ export function updateCarPhysics(car, controls, trackData, dt) {
 
   P.blinkT = (P.blinkT || 0) + dt;
   const blinkOn = Math.sin(P.blinkT * 38) > 0;
-  parts.rearLight.material.emissiveIntensity = brk > 0.15 ? (blinkOn ? 3.8 : 0.7) : 0.4;
+  parts.rearLight.material.emissiveIntensity = (brk > 0.15 || isDead) ? (blinkOn ? 3.8 : 0.7) : 0.4;
 
   const targetHeat = brk > 0.25 && P.speed > 10 ? clamp(brk * (P.speed / 65), 0, 1) : 0;
   P.brakeHeat = (P.brakeHeat || 0) + (targetHeat - (P.brakeHeat || 0)) * Math.min(1, (targetHeat > (P.brakeHeat || 0) ? 7 : 3) * Math.max(dt, 0.016));
@@ -1105,9 +1360,45 @@ export function updateCarPhysics(car, controls, trackData, dt) {
     for (const dm of parts.brakeDiscMats) dm.emissiveIntensity = glow;
   }
 
+  if (parts.repairAura) {
+    if (P.repairFlash > 0.01) {
+      parts.repairAura.visible = true;
+      parts.repairAura.material.opacity = P.repairFlash * 0.72;
+      const sc = 0.95 + (1 - P.repairFlash) * 0.4;
+      parts.repairAura.scale.set(sc, sc, sc * 1.65);
+    } else {
+      parts.repairAura.visible = false;
+    }
+  }
+
   const { gear, rpm } = computeGearAndRpm(P.speed);
   const onCurb = Math.abs(lateral) > halfWidth - 2.1;
   const lateralG = Math.abs(steer) * (P.speed * P.speed * 0.002 + 1.2);
+
+  // Update live cockpit OLED telemetry display (~20 Hz when values change)
+  if (car.userData.isPlayer && parts.oledCtx && parts.oledTex) {
+    parts.oledTimer += dt;
+    if (parts.oledTimer >= 0.05) {
+      parts.oledTimer = 0;
+      const kmhInt = Math.round(P.speed * 3.6);
+      const rpmBucket = Math.round(rpm / 220);
+      const key = `${gear}|${kmhInt}|${rpmBucket}|${drsAvailable ? 1 : 0}|${drsActive ? 1 : 0}|${brk > 0.15 ? 1 : 0}|${P.slip > 0.35 ? 1 : 0}`;
+      if (key !== parts.oledKey) {
+        parts.oledKey = key;
+        drawSteeringOled(
+          parts.oledCtx,
+          kmhInt,
+          gear,
+          rpm,
+          drsAvailable,
+          drsActive,
+          brk > 0.15,
+          P.slip > 0.35
+        );
+        parts.oledTex.needsUpdate = true;
+      }
+    }
+  }
 
   return {
     speedKmh: P.speed * 3.6,
@@ -1123,5 +1414,8 @@ export function updateCarPhysics(car, controls, trackData, dt) {
     u: P.u,
     throttle: thr,
     brake: brk,
+    health: P.health,
+    isDead,
+    repairFlash: P.repairFlash,
   };
 }

@@ -412,9 +412,9 @@ function makeDistanceBoardTexture(distText) {
   return tex;
 }
 
-function makeApartmentFacadeTextures() {
-  const W = 512;
-  const H = 512;
+function makeCurtainWallTextures(theme = 'emerald') {
+  const W = 1024;
+  const H = 1024;
   const alb = document.createElement('canvas');
   alb.width = W; alb.height = H;
   const ag = alb.getContext('2d');
@@ -423,140 +423,149 @@ function makeApartmentFacadeTextures() {
   rgh.width = W; rgh.height = H;
   const rg = rgh.getContext('2d');
 
-  const bmp = document.createElement('canvas');
-  bmp.width = W; bmp.height = H;
-  const bg = bmp.getContext('2d');
+  const ems = document.createElement('canvas');
+  ems.width = W; ems.height = H;
+  const eg = ems.getContext('2d');
 
-  // Neutral-warm plaster base (tinted per-instance via setColorAt)
-  ag.fillStyle = '#efeae0';
+  const palettes = {
+    emerald: {
+      top: '#123846',
+      mid: '#1f5a69',
+      bot: '#2b7784',
+      mullion: '#cfd9e3',
+      spandrel: '#1a2c38',
+      glowA: 'rgba(130, 240, 255, 0.34)',
+      glowB: 'rgba(255, 232, 184, 0.28)',
+    },
+    silver: {
+      top: '#243c54',
+      mid: '#3b6484',
+      bot: '#5c8aa8',
+      mullion: '#dce4ee',
+      spandrel: '#24303d',
+      glowA: 'rgba(175, 235, 255, 0.34)',
+      glowB: 'rgba(255, 244, 214, 0.28)',
+    },
+    champagne: {
+      top: '#3b3428',
+      mid: '#64563f',
+      bot: '#8c7856',
+      mullion: '#d6c39a',
+      spandrel: '#2b261f',
+      glowA: 'rgba(255, 224, 152, 0.38)',
+      glowB: 'rgba(165, 240, 255, 0.22)',
+    },
+  };
+  const pal = palettes[theme] || palettes.emerald;
+
+  // Deep tinted curtain-wall base gradient
+  const baseGrad = ag.createLinearGradient(0, 0, W * 0.4, H);
+  baseGrad.addColorStop(0, pal.top);
+  baseGrad.addColorStop(0.55, pal.mid);
+  baseGrad.addColorStop(1, pal.bot);
+  ag.fillStyle = baseGrad;
   ag.fillRect(0, 0, W, H);
-  rg.fillStyle = 'rgb(220,220,220)';
+
+  // Smooth glass low roughness (~0.15 -> rgb(38,38,38))
+  rg.fillStyle = 'rgb(38, 38, 38)';
   rg.fillRect(0, 0, W, H);
-  bg.fillStyle = 'rgb(148,148,148)';
-  bg.fillRect(0, 0, W, H);
 
-  // Subtle stucco grain
-  for (let i = 0; i < 6000; i++) {
-    const x = (i * 73) % W;
-    const y = (i * 137) % H;
-    const v = 228 + (i % 24);
-    ag.fillStyle = `rgb(${v},${v - 3},${v - 9})`;
-    ag.fillRect(x, y, 2, 2);
-  }
+  eg.fillStyle = '#000000';
+  eg.fillRect(0, 0, W, H);
 
-  const cols = 4;
-  const rows = 4;
+  const cols = 8;
+  const rows = 8;
   const colW = W / cols;
   const rowH = H / rows;
 
+  // Individual glass curtain-wall bays with subtle atrium depth & sky glint
   for (let r = 0; r < rows; r++) {
     const ry = r * rowH;
-
-    // Horizontal stone cornice moulding per floor
-    ag.fillStyle = '#dfd8ca';
-    ag.fillRect(0, ry, W, 10);
-    ag.fillStyle = 'rgba(40,35,28,0.22)';
-    ag.fillRect(0, ry + 10, W, 4);
-    bg.fillStyle = 'rgb(220,220,220)';
-    bg.fillRect(0, ry, W, 10);
-    bg.fillStyle = 'rgb(110,110,110)';
-    bg.fillRect(0, ry + 10, W, 4);
-
     for (let c = 0; c < cols; c++) {
       const cx = c * colW;
-      const wx = cx + 28;
-      const wy = ry + 26;
-      const ww = colW - 56;
-      const wh = rowH - 42;
+      const hash = ((r * 31 + c * 17) % 19) / 19;
 
-      // Louvered Mediterranean shutters flanking window
-      ag.fillStyle = '#4f5d4e';
-      ag.fillRect(wx - 15, wy, 14, wh);
-      ag.fillRect(wx + ww + 1, wy, 14, wh);
-      ag.fillStyle = 'rgba(0,0,0,0.22)';
-      for (let sy = wy + 4; sy < wy + wh - 2; sy += 6) {
-        ag.fillRect(wx - 14, sy, 12, 2);
-        ag.fillRect(wx + ww + 2, sy, 12, 2);
+      // Subtle panel-to-panel tint variation (architectural glass cold-warping realism)
+      const paneGrad = ag.createLinearGradient(cx, ry, cx + colW, ry + rowH);
+      paneGrad.addColorStop(0, `rgba(255, 255, 255, ${0.04 + hash * 0.08})`);
+      paneGrad.addColorStop(0.5, 'rgba(200, 240, 255, 0.02)');
+      paneGrad.addColorStop(1, `rgba(8, 18, 28, ${0.12 + (1 - hash) * 0.1})`);
+      ag.fillStyle = paneGrad;
+      ag.fillRect(cx + 3, ry + 14, colW - 6, rowH - 18);
+
+      // Diagonal Mediterranean sky sheen on alternating bays
+      if ((r + c) % 3 === 0) {
+        ag.fillStyle = 'rgba(210, 242, 255, 0.12)';
+        ag.beginPath();
+        ag.moveTo(cx + 4, ry + 15);
+        ag.lineTo(cx + colW * 0.65, ry + 15);
+        ag.lineTo(cx + 4, ry + rowH * 0.68);
+        ag.closePath();
+        ag.fill();
       }
-      rg.fillStyle = 'rgb(175,175,175)';
-      rg.fillRect(wx - 15, wy, 14, wh);
-      rg.fillRect(wx + ww + 1, wy, 14, wh);
-      bg.fillStyle = 'rgb(175,175,175)';
-      bg.fillRect(wx - 15, wy, 14, wh);
-      bg.fillRect(wx + ww + 1, wy, 14, wh);
 
-      // Stone window surround & sill
-      ag.fillStyle = '#f6f2ea';
-      ag.fillRect(wx - 4, wy - 4, ww + 8, wh + 8);
-      ag.fillStyle = '#d4ccb8';
-      ag.fillRect(wx - 7, wy + wh + 2, ww + 14, 7);
-      bg.fillStyle = 'rgb(205,205,205)';
-      bg.fillRect(wx - 7, wy + wh + 2, ww + 14, 7);
-
-      // Glass interior + diagonal Mediterranean sky glint
-      const glassGrad = ag.createLinearGradient(wx, wy, wx + ww, wy + wh);
-      glassGrad.addColorStop(0, '#27435a');
-      glassGrad.addColorStop(0.45, '#192c3e');
-      glassGrad.addColorStop(1, '#101a26');
-      ag.fillStyle = glassGrad;
-      ag.fillRect(wx, wy, ww, wh);
-      ag.fillStyle = 'rgba(170, 220, 255, 0.28)';
-      ag.beginPath();
-      ag.moveTo(wx + 3, wy + 3);
-      ag.lineTo(wx + ww * 0.62, wy + 3);
-      ag.lineTo(wx + 3, wy + wh * 0.55);
-      ag.closePath();
-      ag.fill();
-
-      // Mullion crossbars
-      ag.fillStyle = '#ebe5d8';
-      ag.fillRect(wx + ww * 0.5 - 2, wy, 4, wh);
-      ag.fillRect(wx, wy + wh * 0.48 - 2, ww, 4);
-
-      // Low roughness on glass panes for sunlight reflections
-      rg.fillStyle = 'rgb(26,26,26)';
-      rg.fillRect(wx, wy, ww, wh);
-      bg.fillStyle = 'rgb(52,52,52)';
-      bg.fillRect(wx, wy, ww, wh);
-
-      // Wrought-iron Juliet balcony across lower third of window
-      const balY = wy + wh * 0.62;
-      const balH = wh * 0.38;
-      ag.fillStyle = '#1b1f26';
-      ag.fillRect(wx - 6, balY, ww + 12, 3);
-      ag.fillRect(wx - 6, balY + balH - 3, ww + 12, 3);
-      for (let bx = wx - 4; bx <= wx + ww + 4; bx += 7) {
-        ag.fillRect(bx, balY, 2, balH);
+      // Interior office / double-height atrium depth lighting
+      if ((r * 7 + c * 13) % 5 === 0) {
+        const isWarm = (r + c) % 2 === 0;
+        const glow = isWarm ? pal.glowB : pal.glowA;
+        ag.fillStyle = glow;
+        ag.fillRect(cx + 8, ry + rowH * 0.32, colW - 16, rowH * 0.48);
+        eg.fillStyle = isWarm ? 'rgb(165, 138, 86)' : 'rgb(88, 172, 195)';
+        eg.fillRect(cx + 10, ry + rowH * 0.36, colW - 20, rowH * 0.40);
       }
-      rg.fillStyle = 'rgb(96,96,96)';
-      rg.fillRect(wx - 6, balY, ww + 12, 3);
-      bg.fillStyle = 'rgb(230,230,230)';
-      bg.fillRect(wx - 6, balY, ww + 12, 3);
     }
+
+    // Horizontal aluminum spandrel band & brushed floor line (roughness ~0.5 -> rgb(128))
+    ag.fillStyle = pal.spandrel;
+    ag.fillRect(0, ry, W, 14);
+    ag.fillStyle = pal.mullion;
+    ag.fillRect(0, ry + 12, W, 4);
+    rg.fillStyle = 'rgb(128, 128, 128)';
+    rg.fillRect(0, ry, W, 16);
   }
 
-  const map = new THREE.CanvasTexture(alb);
-  map.wrapS = THREE.RepeatWrapping;
-  map.wrapT = THREE.RepeatWrapping;
-  map.colorSpace = THREE.SRGBColorSpace;
-  map.anisotropy = 8;
+  // Ultra-thin brushed aluminum vertical mullions
+  for (let c = 0; c <= cols; c++) {
+    const x = c * colW;
+    ag.fillStyle = pal.mullion;
+    ag.fillRect(x - 2, 0, 4, H);
+    rg.fillStyle = 'rgb(128, 128, 128)';
+    rg.fillRect(x - 2, 0, 4, H);
+  }
 
-  const roughnessMap = new THREE.CanvasTexture(rgh);
-  roughnessMap.wrapS = THREE.RepeatWrapping;
-  roughnessMap.wrapT = THREE.RepeatWrapping;
-  roughnessMap.anisotropy = 8;
+  // Subtle architectural diagrid shadow accent across curtain wall
+  ag.strokeStyle = 'rgba(230, 240, 250, 0.14)';
+  ag.lineWidth = 4;
+  for (let offset = -W; offset <= W * 2; offset += W * 0.5) {
+    ag.beginPath();
+    ag.moveTo(offset, 0);
+    ag.lineTo(offset + W, H);
+    ag.stroke();
+    ag.beginPath();
+    ag.moveTo(offset + W, 0);
+    ag.lineTo(offset, H);
+    ag.stroke();
+  }
 
-  const bumpMap = new THREE.CanvasTexture(bmp);
-  bumpMap.wrapS = THREE.RepeatWrapping;
-  bumpMap.wrapT = THREE.RepeatWrapping;
-  bumpMap.anisotropy = 8;
+  const setup = (canvas, isColor) => {
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    if (isColor) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  };
 
-  return { map, roughnessMap, bumpMap };
+  return {
+    map: setup(alb, true),
+    roughnessMap: setup(rgh, false),
+    emissiveMap: setup(ems, true),
+  };
 }
 
-function makeHotelFacadeTextures() {
-  const W = 512;
-  const H = 512;
+function makeZahaCompositeTextures() {
+  const W = 1024;
+  const H = 1024;
   const alb = document.createElement('canvas');
   alb.width = W; alb.height = H;
   const ag = alb.getContext('2d');
@@ -565,112 +574,104 @@ function makeHotelFacadeTextures() {
   rgh.width = W; rgh.height = H;
   const rg = rgh.getContext('2d');
 
-  const bmp = document.createElement('canvas');
-  bmp.width = W; bmp.height = H;
-  const bg = bmp.getContext('2d');
+  const ems = document.createElement('canvas');
+  ems.width = W; ems.height = H;
+  const eg = ems.getContext('2d');
 
-  // Belle Epoque dressed limestone
-  ag.fillStyle = '#f2ede2';
+  // Sleek pearl-white fluid composite cladding
+  const base = ag.createLinearGradient(0, 0, 0, H);
+  base.addColorStop(0, '#f4f6f9');
+  base.addColorStop(0.5, '#e8edf3');
+  base.addColorStop(1, '#dde4ec');
+  ag.fillStyle = base;
   ag.fillRect(0, 0, W, H);
-  rg.fillStyle = 'rgb(212,212,212)';
+  rg.fillStyle = 'rgb(76, 76, 76)';
   rg.fillRect(0, 0, W, H);
-  bg.fillStyle = 'rgb(150,150,150)';
-  bg.fillRect(0, 0, W, H);
+  eg.fillStyle = '#000000';
+  eg.fillRect(0, 0, W, H);
 
-  const cols = 4;
-  const rows = 4;
-  const colW = W / cols;
-  const rowH = H / rows;
+  // Seamless composite panel joints + wrap-around dark glass ribbon windows
+  const ribbons = 4;
+  const bandH = H / ribbons;
+  for (let i = 0; i < ribbons; i++) {
+    const y = i * bandH;
+    // Recessed composite shadow seam
+    ag.fillStyle = '#bfc9d4';
+    ag.fillRect(0, y + 8, W, 4);
 
-  // Vertical classical pilasters
-  for (let c = 0; c <= cols; c++) {
-    const px = c * colW - 8;
-    ag.fillStyle = '#e4dccb';
-    ag.fillRect(px, 0, 16, H);
-    bg.fillStyle = 'rgb(215,215,215)';
-    bg.fillRect(px, 0, 16, H);
-  }
+    // Continuous sweeping ribbon glass
+    const winY = y + bandH * 0.34;
+    const winH = bandH * 0.38;
+    const wGrad = ag.createLinearGradient(0, winY, 0, winY + winH);
+    wGrad.addColorStop(0, '#102436');
+    wGrad.addColorStop(0.5, '#1d4460');
+    wGrad.addColorStop(1, '#0c1a27');
+    ag.fillStyle = wGrad;
+    ag.fillRect(0, winY, W, winH);
 
-  for (let r = 0; r < rows; r++) {
-    const ry = r * rowH;
-
-    // Carved floor belt & gilt accent line
-    ag.fillStyle = '#dad0bc';
-    ag.fillRect(0, ry, W, 12);
-    ag.fillStyle = '#c5a04b';
-    ag.fillRect(0, ry + 11, W, 2);
-    rg.fillStyle = 'rgb(75,75,75)';
-    rg.fillRect(0, ry + 11, W, 2);
-    bg.fillStyle = 'rgb(230,230,230)';
-    bg.fillRect(0, ry, W, 12);
-
-    for (let c = 0; c < cols; c++) {
-      const cx = c * colW;
-      const wx = cx + 22;
-      const wy = ry + 24;
-      const ww = colW - 44;
-      const wh = rowH - 40;
-
-      // Arched Belle Epoque window recess
-      ag.fillStyle = '#d3c9b5';
-      ag.fillRect(wx - 4, wy - 4, ww + 8, wh + 6);
-
-      const gGrad = ag.createLinearGradient(wx, wy, wx + ww, wy + wh);
-      gGrad.addColorStop(0, '#3a6280');
-      gGrad.addColorStop(0.5, '#1d374e');
-      gGrad.addColorStop(1, '#0f1e2c');
-      ag.fillStyle = gGrad;
-      ag.beginPath();
-      ag.arc(wx + ww * 0.5, wy + ww * 0.34, ww * 0.5, Math.PI, 0);
-      ag.lineTo(wx + ww, wy + wh);
-      ag.lineTo(wx, wy + wh);
-      ag.closePath();
-      ag.fill();
-
-      // Warm hotel suite reflection highlight
-      ag.fillStyle = 'rgba(255, 232, 185, 0.22)';
-      ag.fillRect(wx + 4, wy + wh * 0.45, ww - 8, wh * 0.48);
-
-      // Fine bronze window mullions
-      ag.fillStyle = '#c9b382';
-      ag.fillRect(wx + ww * 0.5 - 1.5, wy + 8, 3, wh - 8);
-      ag.fillRect(wx, wy + wh * 0.45, ww, 3);
-
-      // Balustrade balcony
-      const by = wy + wh * 0.68;
-      ag.fillStyle = '#e7dfd0';
-      ag.fillRect(wx - 8, by, ww + 16, 4);
-      ag.fillRect(wx - 8, wy + wh - 2, ww + 16, 6);
-      for (let bx = wx - 4; bx <= wx + ww + 4; bx += 9) {
-        ag.fillRect(bx, by + 4, 4, wy + wh - by - 6);
-      }
-
-      rg.fillStyle = 'rgb(22,22,22)';
-      rg.fillRect(wx, wy + 8, ww, wh * 0.6);
-      bg.fillStyle = 'rgb(50,50,50)';
-      bg.fillRect(wx, wy + 8, ww, wh * 0.6);
-      bg.fillStyle = 'rgb(235,235,235)';
-      bg.fillRect(wx - 8, by, ww + 16, wy + wh - by + 4);
+    // Thin dark mullions inside ribbon glazing
+    ag.fillStyle = '#7c8b99';
+    for (let mx = 0; mx < W; mx += 128) {
+      ag.fillRect(mx, winY, 3, winH);
     }
+
+    // Crisp low roughness on ribbon windows (~0.14)
+    rg.fillStyle = 'rgb(36, 36, 36)';
+    rg.fillRect(0, winY, W, winH);
+
+    // Warm atrium glow strip along ribbon ceiling
+    eg.fillStyle = 'rgba(130, 225, 255, 0.45)';
+    eg.fillRect(0, winY + 3, W, 8);
   }
 
-  const map = new THREE.CanvasTexture(alb);
-  map.wrapS = THREE.RepeatWrapping;
-  map.wrapT = THREE.RepeatWrapping;
-  map.colorSpace = THREE.SRGBColorSpace;
-  map.anisotropy = 8;
+  const setup = (canvas, isColor) => {
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    if (isColor) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  };
 
-  const roughnessMap = new THREE.CanvasTexture(rgh);
-  roughnessMap.wrapS = THREE.RepeatWrapping;
-  roughnessMap.wrapT = THREE.RepeatWrapping;
-  roughnessMap.anisotropy = 8;
+  return {
+    map: setup(alb, true),
+    roughnessMap: setup(rgh, false),
+    emissiveMap: setup(ems, true),
+  };
+}
 
-  const bumpMap = new THREE.CanvasTexture(bmp);
-  bumpMap.wrapS = THREE.RepeatWrapping;
-  bumpMap.wrapT = THREE.RepeatWrapping;
-  bumpMap.anisotropy = 8;
+function makeHelipadTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#252c36';
+  g.fillRect(0, 0, 256, 256);
 
-  return { map, roughnessMap, bumpMap };
+  // Outer safety circle & amber perimeter dashes
+  g.strokeStyle = '#d8b24a';
+  g.lineWidth = 10;
+  g.beginPath();
+  g.arc(128, 128, 98, 0, Math.PI * 2);
+  g.stroke();
+
+  g.strokeStyle = '#38e8ff';
+  g.lineWidth = 4;
+  g.setLineDash([16, 12]);
+  g.beginPath();
+  g.arc(128, 128, 114, 0, Math.PI * 2);
+  g.stroke();
+  g.setLineDash([]);
+
+  // Crisp centered white 'H'
+  g.fillStyle = '#f2f5f8';
+  g.fillRect(78, 72, 22, 112);
+  g.fillRect(156, 72, 22, 112);
+  g.fillRect(78, 116, 100, 24);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
 }
 
 function makeCasinoFacadeTextures() {
@@ -749,70 +750,42 @@ function makeCasinoFacadeTextures() {
   return { map, roughnessMap };
 }
 
-function makeTerracottaRoofTexture() {
-  const c = document.createElement('canvas');
-  c.width = 256; c.height = 256;
-  const g = c.getContext('2d');
-  g.fillStyle = '#a84b2c';
-  g.fillRect(0, 0, 256, 256);
-
-  const cols = 16;
-  const rows = 12;
-  const cw = 256 / cols;
-  const rh = 256 / rows;
-  const tones = ['#b85432', '#9e4326', '#c6613c', '#ad4c2d', '#8e3b20'];
-
-  for (let r = 0; r < rows; r++) {
-    for (let col = 0; col < cols; col++) {
-      g.fillStyle = tones[(r * 7 + col * 3) % tones.length];
-      g.fillRect(col * cw, r * rh, cw - 1, rh - 2);
-      g.fillStyle = 'rgba(20, 8, 4, 0.28)';
-      g.fillRect(col * cw, (r + 1) * rh - 2, cw, 2);
-      g.fillRect((col + 1) * cw - 2, r * rh, 2, rh);
-    }
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(3, 2);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 8;
-  return tex;
-}
-
-function makeAwningTexture() {
-  const c = document.createElement('canvas');
-  c.width = 256; c.height = 128;
-  const g = c.getContext('2d');
-  for (let x = 0; x < 256; x += 32) {
-    g.fillStyle = (x / 32) % 2 === 0 ? '#b91c1c' : '#f4efe6';
-    g.fillRect(x, 0, 32, 128);
-  }
-  g.fillStyle = 'rgba(0,0,0,0.2)';
-  g.fillRect(0, 108, 256, 20);
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
 function makePalmTrunkTexture() {
   const c = document.createElement('canvas');
-  c.width = 128; c.height = 256;
+  c.width = 256; c.height = 512;
   const g = c.getContext('2d');
-  g.fillStyle = '#735a40';
-  g.fillRect(0, 0, 128, 256);
-  for (let y = 0; y < 256; y += 14) {
-    g.fillStyle = '#533e2b';
-    g.fillRect(0, y, 128, 5);
-    g.fillStyle = '#8b7154';
-    g.fillRect(0, y + 5, 128, 3);
+  g.fillStyle = '#7c6248';
+  g.fillRect(0, 0, 256, 512);
+
+  // Subtle vertical fibrous bark grain
+  for (let x = 0; x < 256; x += 6) {
+    g.fillStyle = (x % 12 === 0) ? 'rgba(48,34,22,0.16)' : 'rgba(176,148,118,0.12)';
+    g.fillRect(x, 0, 3, 512);
   }
+
+  // Distinct Royal & Date palm annular leaf-scar rings
+  for (let y = 0; y < 512; y += 16) {
+    g.fillStyle = '#4f3a27';
+    g.fillRect(0, y, 256, 5);
+    g.fillStyle = '#9a8064';
+    g.fillRect(0, y + 5, 256, 4);
+    g.fillStyle = 'rgba(255,244,224,0.12)';
+    g.fillRect(0, y + 9, 256, 2);
+  }
+
+  // Upper crownshaft transition band near top
+  const grad = g.createLinearGradient(0, 440, 0, 512);
+  grad.addColorStop(0, 'rgba(92,126,56,0)');
+  grad.addColorStop(1, 'rgba(92,126,56,0.72)');
+  g.fillStyle = grad;
+  g.fillRect(0, 440, 256, 72);
+
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(1, 3);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
   return tex;
 }
 
@@ -820,41 +793,66 @@ function makePalmFrondTexture() {
   const c = document.createElement('canvas');
   c.width = 256; c.height = 256;
   const g = c.getContext('2d');
-  g.clearRect(0, 0, 256, 256);
 
-  // Central rachis rib
-  g.strokeStyle = '#6c8c38';
-  g.lineWidth = 6;
+  const a = document.createElement('canvas');
+  a.width = 256; a.height = 256;
+  const ag = a.getContext('2d');
+  ag.fillStyle = '#000000';
+  ag.fillRect(0, 0, 256, 256);
+
+  // Fill color canvas base green so bilinear sampling never bleeds black halos
+  g.fillStyle = '#4f8e34';
+  g.fillRect(0, 0, 256, 256);
+
+  // Central rachis rib (color + alpha)
+  g.strokeStyle = '#7ba13e';
+  g.lineWidth = 7;
   g.beginPath();
   g.moveTo(128, 254);
   g.lineTo(128, 8);
   g.stroke();
 
-  // Feathered palm leaflets
-  for (let i = 0; i < 24; i++) {
-    const t = i / 23;
-    const y = 242 - t * 224;
-    const span = Math.sin(Math.pow(t, 0.72) * Math.PI) * 116;
-    const tipY = y - 18 - (1 - t) * 14;
-    g.fillStyle = i % 2 === 0 ? '#3f7e2f' : '#4f913b';
+  ag.strokeStyle = '#ffffff';
+  ag.lineWidth = 7;
+  ag.beginPath();
+  ag.moveTo(128, 254);
+  ag.lineTo(128, 8);
+  ag.stroke();
 
-    g.beginPath();
-    g.moveTo(128, y);
-    g.quadraticCurveTo(128 - span * 0.55, y - 16, 128 - span, tipY);
-    g.quadraticCurveTo(128 - span * 0.5, y - 4, 128, y + 6);
-    g.fill();
+  // Dense tapered pinnate leaflets along both sides of the frond
+  const leafletCount = 30;
+  for (let i = 0; i < leafletCount; i++) {
+    const t = i / (leafletCount - 1);
+    const y = 246 - t * 232;
+    const span = Math.sin(Math.pow(t, 0.68) * Math.PI * 0.96) * 120 + 6;
+    const tipY = y - 20 - (1 - t) * 15;
+    const shade = i % 3 === 0 ? '#5ea63d' : i % 3 === 1 ? '#478b31' : '#6cb448';
 
-    g.beginPath();
-    g.moveTo(128, y);
-    g.quadraticCurveTo(128 + span * 0.55, y - 16, 128 + span, tipY);
-    g.quadraticCurveTo(128 + span * 0.5, y - 4, 128, y + 6);
-    g.fill();
+    for (const dir of [-1, 1]) {
+      g.fillStyle = shade;
+      g.beginPath();
+      g.moveTo(128, y);
+      g.quadraticCurveTo(128 + dir * span * 0.56, y - 16, 128 + dir * span, tipY);
+      g.quadraticCurveTo(128 + dir * span * 0.48, y - 3, 128, y + 5.5);
+      g.fill();
+
+      ag.fillStyle = '#ffffff';
+      ag.beginPath();
+      ag.moveTo(128, y);
+      ag.quadraticCurveTo(128 + dir * span * 0.56, y - 16, 128 + dir * span, tipY);
+      ag.quadraticCurveTo(128 + dir * span * 0.48, y - 3, 128, y + 5.5);
+      ag.fill();
+    }
   }
 
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
-  return tex;
+  const map = new THREE.CanvasTexture(c);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 8;
+
+  const alphaMap = new THREE.CanvasTexture(a);
+  alphaMap.anisotropy = 8;
+
+  return { map, alphaMap };
 }
 
 function makeSponsorBannerTexture(primary, accent, title, sub) {
@@ -960,34 +958,218 @@ function makeTecproBlockGeometry() {
   ]);
 }
 
-function makeTiledBuildingGeo(uRepeat, vRepeat) {
-  const geo = new THREE.BoxGeometry(1, 1, 1);
-  const uv = geo.attributes.uv;
-  // Faces 0..5 (4 vertices each): +X, -X, +Y, -Y, +Z, -Z
-  for (let face = 0; face < 6; face++) {
-    const base = face * 4;
-    if (face === 2 || face === 3) {
-      for (let v = 0; v < 4; v++) uv.setXY(base + v, 0.02, 0.96);
-    } else {
-      for (let v = 0; v < 4; v++) {
-        uv.setXY(base + v, uv.getX(base + v) * uRepeat, uv.getY(base + v) * vRepeat);
-      }
+function makeLoftedTowerGeo(ringFn, heightSegs, segsAround, uRepeat, vRepeat) {
+  // Generic smooth lofted skyscraper geometry grounded at y = 0 .. 1
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let yIdx = 0; yIdx <= heightSegs; yIdx++) {
+    const t = yIdx / heightSegs;
+    const ring = ringFn(t);
+    for (let aIdx = 0; aIdx <= segsAround; aIdx++) {
+      const s = aIdx / segsAround;
+      const pt = ring[aIdx % segsAround];
+      positions.push(pt.x, t, pt.z);
+      uvs.push(s * uRepeat, t * vRepeat);
     }
   }
-  uv.needsUpdate = true;
+
+  const stride = segsAround + 1;
+  for (let yIdx = 0; yIdx < heightSegs; yIdx++) {
+    for (let aIdx = 0; aIdx < segsAround; aIdx++) {
+      const a = yIdx * stride + aIdx;
+      const b = a + 1;
+      const c = a + stride;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  // Flat roof cap at t = 1 (facing +Y)
+  const topRing = ringFn(1);
+  const topCenterIdx = positions.length / 3;
+  positions.push(0, 1, 0);
+  uvs.push(0.02, 0.96);
+  const capStart = positions.length / 3;
+  for (let aIdx = 0; aIdx < segsAround; aIdx++) {
+    positions.push(topRing[aIdx].x, 1, topRing[aIdx].z);
+    uvs.push(0.02, 0.96);
+  }
+  for (let aIdx = 0; aIdx < segsAround; aIdx++) {
+    const next = (aIdx + 1) % segsAround;
+    indices.push(topCenterIdx, capStart + next, capStart + aIdx);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
   return geo;
 }
 
-function makeHipRoofGeometry() {
-  const geo = new THREE.ConeGeometry(Math.SQRT1_2, 1, 4, 1);
-  geo.rotateY(Math.PI / 4);
-  geo.translate(0, 0.5, 0);
+function makeTaperedDiagridTowerGeo(uRepeat, vRepeat) {
+  // Archetype A: Etihad / Ping An style chamfered octagonal supertall tapering smoothly 1.0 -> 0.58
+  const baseAngles = [0.28, 0.5, 1.07, 1.29, 1.85, 2.07, 2.64, 2.86, 3.42, 3.64, 4.21, 4.43, 4.99, 5.21, 5.78, 6.00];
+  return makeLoftedTowerGeo(
+    (t) => {
+      const taper = 1.0 - 0.42 * Math.pow(t, 1.25);
+      const rx = 0.56 * taper;
+      const rz = 0.56 * taper;
+      return baseAngles.map((ang) => {
+        const c = Math.cos(ang);
+        const s = Math.sin(ang);
+        // Superellipse chamfered cross section
+        return {
+          x: Math.sign(c) * Math.pow(Math.abs(c), 0.55) * rx,
+          z: Math.sign(s) * Math.pow(Math.abs(s), 0.55) * rz,
+        };
+      });
+    },
+    14,
+    baseAngles.length,
+    uRepeat,
+    vRepeat
+  );
+}
+
+function makeTaperedFinsGeo() {
+  // Sleek tapered metallic corner fins + crown spire for Archetype A
+  const parts = [];
+  const corners = [
+    [0.44, 0.44], [-0.44, 0.44], [0.44, -0.44], [-0.44, -0.44],
+  ];
+  for (const [cx, cz] of corners) {
+    // Lower + upper angled aerodynamic fin segments tapering inward
+    parts.push({ w: 0.048, h: 0.55, d: 0.048, x: cx * 0.94, y: 0.275, z: cz * 0.94, rx: -cz * 0.14, rz: cx * 0.14 });
+    parts.push({ w: 0.036, h: 0.52, d: 0.036, x: cx * 0.72, y: 0.76, z: cz * 0.72, rx: -cz * 0.22, rz: cx * 0.22 });
+  }
+  // Crown perimeter ring & spire
+  parts.push({ w: 0.64, h: 0.025, d: 0.64, x: 0, y: 1.005, z: 0 });
+  parts.push({ w: 0.032, h: 0.18, d: 0.032, x: 0, y: 1.09, z: 0 });
+  return mergeBoxParts(parts);
+}
+
+function makeTwistedHelixTowerGeo(uRepeat, vRepeat) {
+  // Archetype B1: Cayan / Shenzhen Bay style smooth twisted helical glass tower (y: 0..1)
+  const segsAround = 28;
+  return makeLoftedTowerGeo(
+    (t) => {
+      const twist = t * 1.12; // ~64 deg smooth helical twist
+      const taper = 1.0 - 0.22 * t;
+      const cosT = Math.cos(twist);
+      const sinT = Math.sin(twist);
+      const pts = [];
+      for (let i = 0; i < segsAround; i++) {
+        const ang = (i / segsAround) * Math.PI * 2;
+        const lx = Math.sign(Math.cos(ang)) * Math.pow(Math.abs(Math.cos(ang)), 0.62) * 0.56 * taper;
+        const lz = Math.sign(Math.sin(ang)) * Math.pow(Math.abs(Math.sin(ang)), 0.62) * 0.42 * taper;
+        pts.push({
+          x: lx * cosT - lz * sinT,
+          z: lx * sinT + lz * cosT,
+        });
+      }
+      return pts;
+    },
+    18,
+    segsAround,
+    uRepeat,
+    vRepeat
+  );
+}
+
+function makeCurvedSailTowerGeo(uRepeat, vRepeat) {
+  // Archetype B2: Sweeping curved sail / teardrop tower (Burj Al Arab / Houhai Bay inspired)
+  const segsAround = 28;
+  return makeLoftedTowerGeo(
+    (t) => {
+      const sweepZ = Math.sin(t * Math.PI * 0.72) * 0.14;
+      const taperX = 1.0 - 0.46 * Math.pow(t, 1.35);
+      const taperZ = 1.0 - 0.34 * Math.pow(t, 1.15);
+      const pts = [];
+      for (let i = 0; i < segsAround; i++) {
+        const ang = (i / segsAround) * Math.PI * 2;
+        // Aerodynamic airfoil/sail cross-section
+        const lx = Math.cos(ang) * (0.48 + 0.14 * Math.sin(ang)) * taperX;
+        const lz = Math.sin(ang) * 0.56 * taperZ + sweepZ;
+        pts.push({ x: lx, z: lz });
+      }
+      return pts;
+    },
+    16,
+    segsAround,
+    uRepeat,
+    vRepeat
+  );
+}
+
+function makeChamferedBoxGeo(uRepeat, vRepeat) {
+  // Chamfered 8-sided sleek curtain-wall tower prism grounded at y = 0..1
+  const segs = 16;
+  return makeLoftedTowerGeo(
+    () => {
+      const pts = [];
+      for (let i = 0; i < segs; i++) {
+        const a = (i / segs) * Math.PI * 2;
+        pts.push({
+          x: Math.sign(Math.cos(a)) * Math.pow(Math.abs(Math.cos(a)), 0.45) * 0.5,
+          z: Math.sign(Math.sin(a)) * Math.pow(Math.abs(Math.sin(a)), 0.45) * 0.5,
+        });
+      }
+      return pts;
+    },
+    2,
+    segs,
+    uRepeat,
+    vRepeat
+  );
+}
+
+function makeOrganicPavilionGeo(uRepeat, vRepeat) {
+  // Archetype D: Zaha Hadid-style multi-lobed fluid pavilion extruded upward (y: 0..1)
+  const shape = new THREE.Shape();
+  const lobes = 28;
+  for (let i = 0; i <= lobes; i++) {
+    const a = (i / lobes) * Math.PI * 2;
+    const rad = 0.46 + 0.11 * Math.cos(2 * a) + 0.06 * Math.sin(3 * a);
+    const px = Math.cos(a) * rad * 1.15;
+    const py = Math.sin(a) * rad * 0.88;
+    if (i === 0) shape.moveTo(px, py);
+    else shape.lineTo(px, py);
+  }
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.92,
+    bevelEnabled: true,
+    bevelThickness: 0.05,
+    bevelSize: 0.06,
+    bevelSegments: 4,
+    curveSegments: 28,
+  });
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, 0.05, 0);
+
+  // Remap cylindrical/ribbon UVs smoothly around perimeter and height
+  const pos = geo.getAttribute('position');
+  const uv = geo.getAttribute('uv');
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const angleU = (Math.atan2(z, x) / (Math.PI * 2) + 0.5) * uRepeat;
+    uv.setXY(i, angleU, y * vRepeat);
+  }
+  uv.needsUpdate = true;
+  geo.computeVertexNormals();
   return geo;
 }
 
 function makePalmTrunkGeometry() {
-  const radialSegs = 7;
-  const heightSegs = 7;
+  // High-segment tapered curved palm trunk with swollen root flare & ringed relief
+  const radialSegs = 12;
+  const heightSegs = 14;
   const positions = [];
   const uvs = [];
   const indices = [];
@@ -995,8 +1177,10 @@ function makePalmTrunkGeometry() {
   for (let yIdx = 0; yIdx <= heightSegs; yIdx++) {
     const t = yIdx / heightSegs;
     const cy = t;
-    const bendX = Math.sin(t * Math.PI * 0.85) * 0.09;
-    const rad = THREE.MathUtils.lerp(0.42, 0.22, t);
+    const bendX = Math.sin(t * Math.PI * 0.78) * 0.14;
+    const rootFlare = t < 0.14 ? Math.pow(1 - t / 0.14, 1.6) * 0.22 : 0;
+    const ringBump = 1 + Math.sin(t * Math.PI * 26) * 0.032;
+    const rad = (THREE.MathUtils.lerp(0.36, 0.19, Math.pow(t, 0.85)) + rootFlare) * ringBump;
     for (let aIdx = 0; aIdx <= radialSegs; aIdx++) {
       const ang = (aIdx / radialSegs) * Math.PI * 2;
       positions.push(bendX + Math.cos(ang) * rad, cy, Math.sin(ang) * rad);
@@ -1022,17 +1206,24 @@ function makePalmTrunkGeometry() {
 }
 
 function makePalmCrownGeometry() {
+  // 3-tier arching royal & date palm frond crown with vertex color variation (emerald -> lime)
   const positions = [];
   const uvs = [];
+  const colors = [];
   const indices = [];
   let vertOffset = 0;
 
   const tiers = [
-    { count: 6, pitch: 0.22, droop: 1.45, len: 3.7, width: 1.45, phase: 0 },
-    { count: 4, pitch: 0.65, droop: 0.85, len: 2.8, width: 1.2, phase: 0.45 },
+    { count: 7, pitch: 0.14, droop: 1.68, len: 4.1, width: 1.55, phase: 0.0,  baseL: 0.25, tipL: 0.82 },
+    { count: 6, pitch: 0.48, droop: 1.15, len: 3.6, width: 1.42, phase: 0.42, baseL: 0.42, tipL: 0.95 },
+    { count: 4, pitch: 0.88, droop: 0.58, len: 2.7, width: 1.15, phase: 0.88, baseL: 0.58, tipL: 1.00 },
   ];
 
-  const segs = 5;
+  const cDeep = new THREE.Color(0x2d6a33);
+  const cSunlit = new THREE.Color(0x9be24f);
+  const cTmpV = new THREE.Color();
+
+  const segs = 8;
   for (const tier of tiers) {
     for (let f = 0; f < tier.count; f++) {
       const yaw = (f / tier.count) * Math.PI * 2 + tier.phase;
@@ -1041,32 +1232,92 @@ function makePalmCrownGeometry() {
       for (let s = 0; s <= segs; s++) {
         const t = s / segs;
         const r = t * tier.len;
-        const y = t * Math.sin(tier.pitch) * tier.len - t * t * tier.droop;
-        const hw = tier.width * 0.5 * Math.sin(Math.min(1, t * 1.1) * Math.PI * 0.85 + 0.15);
+        const yCenter = t * Math.sin(tier.pitch) * tier.len - t * t * tier.droop;
+        const hw = tier.width * 0.5 * Math.sin(Math.min(1, t * 1.08) * Math.PI * 0.86 + 0.14);
+        // Subtle 3D V-fold droop along leaflet edges for crisp light/shadow catching
+        const edgeY = yCenter - hw * 0.14;
 
-        // Left & right edges perpendicular to frond direction
         const lx = cosY * r - sinY * hw;
         const lz = sinY * r + cosY * hw;
         const rx = cosY * r + sinY * hw;
         const rz = sinY * r - cosY * hw;
 
-        positions.push(lx, y, lz, rx, y, rz);
-        uvs.push(0, 1 - t, 1, 1 - t);
+        positions.push(lx, edgeY, lz, cosY * r, yCenter + 0.04, sinY * r, rx, edgeY, rz);
+        uvs.push(0, 1 - t, 0.5, 1 - t, 1, 1 - t);
+
+        const blend = THREE.MathUtils.lerp(tier.baseL, tier.tipL, Math.pow(t, 0.85));
+        cTmpV.copy(cDeep).lerp(cSunlit, blend);
+        colors.push(
+          cTmpV.r * 0.92, cTmpV.g * 0.95, cTmpV.b * 0.92,
+          cTmpV.r * 1.04, cTmpV.g * 1.06, cTmpV.b * 1.02,
+          cTmpV.r * 0.92, cTmpV.g * 0.95, cTmpV.b * 0.92
+        );
       }
       for (let s = 0; s < segs; s++) {
-        const a = vertOffset + s * 2;
-        indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+        const a = vertOffset + s * 3;
+        indices.push(a, a + 1, a + 3, a + 1, a + 4, a + 3);
+        indices.push(a + 1, a + 2, a + 4, a + 2, a + 5, a + 4);
       }
-      vertOffset += (segs + 1) * 2;
+      vertOffset += (segs + 1) * 3;
     }
   }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   geo.setIndex(indices);
   geo.computeVertexNormals();
   return geo;
+}
+
+function makeSpectatorTorsoArmsGeometry() {
+  // Multi-part cheering spectator silhouette (tapered torso + raised left/right V-arms)
+  const parts = [];
+
+  const torso = new THREE.CylinderGeometry(0.24, 0.30, 0.72, 10);
+  torso.translate(0, 0.36, 0);
+  parts.push(torso);
+
+  for (const side of [-1, 1]) {
+    const arm = new THREE.CylinderGeometry(0.065, 0.08, 0.48, 7);
+    arm.rotateZ(side * -0.44);
+    arm.translate(side * 0.30, 0.72, 0);
+    parts.push(arm);
+  }
+
+  const positions = [];
+  const normals = [];
+  const indices = [];
+  let vertOffset = 0;
+  for (const g of parts) {
+    const p = g.getAttribute('position');
+    const n = g.getAttribute('normal');
+    const idx = g.getIndex();
+    for (let i = 0; i < p.count; i++) {
+      positions.push(p.getX(i), p.getY(i), p.getZ(i));
+      normals.push(n.getX(i), n.getY(i), n.getZ(i));
+    }
+    if (idx) {
+      for (let i = 0; i < idx.count; i++) indices.push(vertOffset + idx.getX(i));
+    }
+    vertOffset += p.count;
+    g.dispose();
+  }
+
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  merged.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  merged.setIndex(indices);
+  return merged;
+}
+
+function makeCrowdFlagGeometry() {
+  // Pole + fluttering pennant extending along +X from top of pole
+  return mergeBoxParts([
+    { w: 0.045, h: 1.55, d: 0.045, x: 0, y: 0.77, z: 0 },
+    { w: 0.92, h: 0.56, d: 0.025, x: 0.48, y: 1.24, z: 0 },
+  ]);
 }
 
 function makeYachtHullGeometry() {
@@ -1888,64 +2139,97 @@ export function buildMonacoTrack(scene) {
     return { idx: best, distSq: bd };
   };
 
-  // --- Shared Architectural Materials & Geometries ---
-  const aptTex = makeApartmentFacadeTextures();
-  const aptMat = new THREE.MeshStandardMaterial({
+  // --- Shared Futuristic Architectural Materials (Shenzhen / Abu Dhabi Glass & Composite) ---
+  const emeraldTex = makeCurtainWallTextures('emerald');
+  const silverTex = makeCurtainWallTextures('silver');
+  const champagneTex = makeCurtainWallTextures('champagne');
+  const zahaTex = makeZahaCompositeTextures();
+  const helipadTex = makeHelipadTexture();
+
+  const makeGlassMat = (tex, tintHex = 0xffffff) =>
+    new THREE.MeshPhysicalMaterial({
+      color: tintHex,
+      map: tex.map,
+      roughnessMap: tex.roughnessMap,
+      emissive: new THREE.Color(0xffffff),
+      emissiveMap: tex.emissiveMap,
+      emissiveIntensity: 0.42,
+      roughness: 1.0, // Driven by roughnessMap (0.15 glass / 0.50 aluminum mullions)
+      metalness: 0.75,
+      clearcoat: 0.8,
+      clearcoatRoughness: 0.08,
+      envMapIntensity: 1.15,
+      side: THREE.FrontSide,
+    });
+
+  const glassEmeraldMat = makeGlassMat(emeraldTex);
+  const glassSilverMat = makeGlassMat(silverTex);
+  const glassChampagneMat = makeGlassMat(champagneTex);
+
+  const zahaMat = new THREE.MeshPhysicalMaterial({
     color: 0xffffff,
-    map: aptTex.map,
-    roughnessMap: aptTex.roughnessMap,
-    bumpMap: aptTex.bumpMap,
-    bumpScale: 0.18,
-    roughness: 0.95,
-    metalness: 0.08,
+    map: zahaTex.map,
+    roughnessMap: zahaTex.roughnessMap,
+    emissive: new THREE.Color(0x9eeeff),
+    emissiveMap: zahaTex.emissiveMap,
+    emissiveIntensity: 0.45,
+    roughness: 0.88,
+    metalness: 0.35,
+    clearcoat: 0.85,
+    clearcoatRoughness: 0.1,
     side: THREE.FrontSide,
   });
 
-  const hotelTex = makeHotelFacadeTextures();
-  const hotelMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    map: hotelTex.map,
-    roughnessMap: hotelTex.roughnessMap,
-    bumpMap: hotelTex.bumpMap,
-    bumpScale: 0.22,
-    roughness: 0.92,
-    metalness: 0.14,
+  const frameMetalMat = new THREE.MeshStandardMaterial({
+    color: 0xd0d8e2,
+    roughness: 0.28,
+    metalness: 0.88,
     side: THREE.FrontSide,
   });
 
-  const roofMat = new THREE.MeshStandardMaterial({
-    map: makeTerracottaRoofTexture(),
-    roughness: 0.78,
-    metalness: 0.04,
-    side: THREE.FrontSide,
+  const ledCyanMat = new THREE.MeshStandardMaterial({
+    color: 0xb8f6ff,
+    emissive: 0x38e8ff,
+    emissiveIntensity: 2.0,
+    roughness: 0.2,
   });
 
-  const terraceMat = new THREE.MeshStandardMaterial({
-    color: 0xcbc2b2,
-    roughness: 0.82,
-    metalness: 0.05,
-    side: THREE.FrontSide,
+  const ledWarmMat = new THREE.MeshStandardMaterial({
+    color: 0xfff4dc,
+    emissive: 0xffd580,
+    emissiveIntensity: 1.75,
+    roughness: 0.2,
   });
 
-  const awningMat = new THREE.MeshStandardMaterial({
-    map: makeAwningTexture(),
-    roughness: 0.85,
-    side: THREE.DoubleSide,
+  const helipadMat = new THREE.MeshStandardMaterial({
+    map: helipadTex,
+    roughness: 0.65,
+    metalness: 0.2,
   });
 
-  // --- Mediterranean City Skyline (Apartments, Luxury Hotels, Setbacks & Roofs) ---
-  const aptLowSpecs = [];
-  const aptMidSpecs = [];
-  const aptTallSpecs = [];
-  const aptTowerSpecs = [];
-  const hotelLowSpecs = [];
-  const hotelMidSpecs = [];
-  const hotelTallSpecs = [];
-  const roofSpecs = [];
-  const awningSpecs = [];
+  // --- Futuristic Shenzhen & Abu Dhabi City Skyline (4 Architectural Archetypes) ---
+  // Archetype A: Tapered Diagrid Supertalls (Etihad / Ping An)
+  const taperedLowE = [];
+  const taperedHighE = [];
+  const taperedHighC = [];
+  const taperedFinsSpecs = [];
+  // Archetype B: Twisted Helix & Curved Sail Towers (Cayan / Burj Al Arab / Shenzhen Bay)
+  const helixS = [];
+  const helixE = [];
+  const sailC = [];
+  const sailS = [];
+  // Archetype C: Cantilevered Sky-Bridge & Luxury Retail Podium Complexes
+  const podiumSpecs = [];
+  const twinTowerE = [];
+  const twinTowerS = [];
+  const skybridgeSpecs = [];
+  // Archetype D: Zaha Hadid Fluid Organic Pavilions (Harbor Promenade & Plazas)
+  const pavilionSpecs = [];
+  // Architectural LED strips, crown spires & helipads
+  const ledCyanSpecs = [];
+  const ledWarmSpecs = [];
+  const helipadSpecs = [];
 
-  const aptPalette = [0xf2e6d4, 0xe8c499, 0xdfa78b, 0xdfd9ca, 0xcad6c5, 0xead4b4, 0xd8b29b];
-  const hotelPalette = [0xf7f2e8, 0xebe3d3, 0xe7dfd5, 0xf2e9dc];
   const BUILDING_GROUND_Y = -1.0;
 
   for (let i = 0; i < 168; i++) {
@@ -1954,111 +2238,177 @@ export function buildMonacoTrack(scene) {
     const r = right[idx];
     const side = i % 2 === 0 ? -1 : 1;
 
-    const dist = 25 + ((i * 37) % 62);
+    const dist = 27 + ((i * 37) % 60);
     const bx = p.x + r.x * side * dist;
     const bz = p.z + r.z * side * dist;
-    const w = 15 + (i % 4) * 4;
-    const d = 14 + ((i * 3) % 4) * 4;
-    const halfFootprint = Math.max(w, d) * 0.5;
+    const nearHarbor = bx > 580 && bx < 712 && bz > -375 && bz < 180;
+    const w = 15 + (i % 4) * 3.5;
+    const d = 14 + ((i * 3) % 4) * 3.5;
+
+    // Select archetype cleanly while reserving waterfront promenade plots for organic pavilions
+    const isComplex = i % 7 === 0 && dist > 32;
+    const isPavilion = !isComplex && ((nearHarbor && i % 2 === 0) || i % 11 === 0);
+    const footprintPad = isComplex ? Math.max(w, d) * 1.15 : isPavilion ? Math.max(w, d) * 0.75 : Math.max(w, d) * 0.55;
 
     // Enforce strict >=12m setback from Port Hercule harbor water edge
-    if (isInsideHarborWater(bx, bz, 12 + halfFootprint)) continue;
+    if (isInsideHarborWater(bx, bz, 12 + footprintPad)) continue;
 
     const near = nearestSample(bx, bz);
-    if (near.distSq < 460) continue; // strict >=21.4m track centerline clearance
+    const minDistSq = isComplex ? 680 : 475;
+    if (near.distSq < minDistSq) continue; // strict track centerline clearance
 
     const nearT = tan[near.idx];
+    const nearR = right[near.idx];
     const roadYaw = Math.atan2(-nearT.x, -nearT.z);
     const trackY = Math.max(0, pos[near.idx].y);
 
-    if (i % 5 === 0) {
-      // Luxury multi-tiered hotel grounded to y=-1.0 with upper setback & rooftop terrace
-      const podiumStoriesH = 20 + ((i * 11) % 14);
-      const h1 = trackY + podiumStoriesH - BUILDING_GROUND_Y;
-      const h2 = 11 + ((i * 7) % 10);
-      const col = hotelPalette[i % hotelPalette.length];
-      const podiumTopY = BUILDING_GROUND_Y + h1;
-      const towerTopY = podiumTopY + h2;
-
-      const podiumSpec = { x: bx, y: BUILDING_GROUND_Y + h1 * 0.5, z: bz, w, h: h1, d, yaw: roadYaw, col };
-      if (h1 < 25) hotelLowSpecs.push(podiumSpec);
-      else if (h1 < 37) hotelMidSpecs.push(podiumSpec);
-      else hotelTallSpecs.push(podiumSpec);
-
-      const upperSpec = {
+    if (isPavilion) {
+      // Archetype D: Zaha Hadid-style fluid organic pavilion grounded to y = -1.0
+      const pavH = trackY + 9 + (i % 4) * 2.5 - BUILDING_GROUND_Y;
+      const pw = w * 1.28;
+      const pd = d * 1.18;
+      pavilionSpecs.push({ x: bx, y: BUILDING_GROUND_Y, z: bz, w: pw, h: pavH, d: pd, yaw: roadYaw });
+      // Subtle glowing cyan cove LED eave ring near roofline
+      ledCyanSpecs.push({
         x: bx,
-        y: podiumTopY + h2 * 0.5,
+        y: BUILDING_GROUND_Y + pavH * 0.92,
         z: bz,
-        w: w * 0.74,
-        h: h2,
-        d: d * 0.74,
-        yaw: roadYaw,
-        col,
-      };
-      if (h2 < 16) hotelLowSpecs.push(upperSpec);
-      else hotelMidSpecs.push(upperSpec);
-
-      roofSpecs.push({
-        type: 'terrace',
-        x: bx,
-        y: towerTopY + 0.55,
-        z: bz,
-        w: w * 0.78,
-        h: 1.1,
-        d: d * 0.78,
+        w: pw * 0.88,
+        h: 0.36,
+        d: pd * 0.68,
         yaw: roadYaw,
       });
-    } else {
-      // Classic Riviera apartment block grounded to y=-1.0 + pitched terracotta roof
-      const isMid = i % 3 !== 0;
-      const storiesH = isMid ? 18 + ((i * 13) % 16) : 12 + ((i * 9) % 8);
-      const h = trackY + storiesH - BUILDING_GROUND_Y;
-      const col = aptPalette[i % aptPalette.length];
-      const spec = { x: bx, y: BUILDING_GROUND_Y + h * 0.5, z: bz, w, h, d, yaw: roadYaw, col };
+    } else if (isComplex) {
+      // Archetype C: Wide glass retail podium + twin towers + glowing mid-level cantilevered skybridge
+      const podiumTopH = trackY + 8.5 - BUILDING_GROUND_Y;
+      const pw = w * 1.95;
+      const pd = d * 1.05;
+      podiumSpecs.push({ x: bx, y: BUILDING_GROUND_Y, z: bz, w: pw, h: podiumTopH, d: pd, yaw: roadYaw });
 
-      if (h < 22) aptLowSpecs.push(spec);
-      else if (h < 31) aptMidSpecs.push(spec);
-      else if (h < 41) aptTallSpecs.push(spec);
-      else aptTowerSpecs.push(spec);
+      const towerStories = 28 + ((i * 11) % 24);
+      const tH = trackY + towerStories - BUILDING_GROUND_Y;
+      const spanOffset = pw * 0.29;
+      const cosY = Math.cos(roadYaw);
+      const sinY = Math.sin(roadYaw);
+      const lx = bx - cosY * spanOffset;
+      const lz = bz + sinY * spanOffset;
+      const rx = bx + cosY * spanOffset;
+      const rz = bz - sinY * spanOffset;
 
-      roofSpecs.push({
-        type: 'hip',
-        x: bx,
-        y: BUILDING_GROUND_Y + h,
-        z: bz,
-        w: w + 0.9,
-        h: 2.8 + (i % 3) * 0.6,
-        d: d + 0.9,
-        yaw: roadYaw,
-      });
-    }
+      if (!isInsideHarborWater(lx, lz, 12 + w * 0.45) && !isInsideHarborWater(rx, rz, 12 + w * 0.45)) {
+        const twW = w * 0.68;
+        const twD = d * 0.68;
+        const bucket = i % 2 === 0 ? twinTowerE : twinTowerS;
+        bucket.push({ x: lx, y: BUILDING_GROUND_Y, z: lz, w: twW, h: tH, d: twD, yaw: roadYaw });
+        bucket.push({ x: rx, y: BUILDING_GROUND_Y, z: rz, w: twW, h: tH * 0.94, d: twD, yaw: roadYaw });
 
-    // Track-facing ground-floor storefront awning for street-front buildings
-    if (dist < 42 && i % 2 === 0) {
-      const toRoadX = pos[near.idx].x - bx;
-      const toRoadZ = pos[near.idx].z - bz;
-      const len = Math.hypot(toRoadX, toRoadZ) || 1;
-      const ax = bx + (toRoadX / len) * (w * 0.52);
-      const az = bz + (toRoadZ / len) * (d * 0.52);
-      if (nearestSample(ax, az).distSq > 200 && !isInsideHarborWater(ax, az, 12)) {
-        awningSpecs.push({
-          x: ax,
-          y: trackY + 3.8,
-          z: az,
-          w: Math.min(w, d) * 0.72,
-          yaw: Math.atan2(toRoadX, toRoadZ),
+        // Glowing glass skybridge linking the twin towers
+        const bridgeY = BUILDING_GROUND_Y + tH * 0.58;
+        skybridgeSpecs.push({
+          x: bx,
+          y: bridgeY,
+          z: bz,
+          w: spanOffset * 1.85,
+          h: 3.6,
+          d: twD * 0.64,
+          yaw: roadYaw,
+        });
+        ledCyanSpecs.push({
+          x: bx,
+          y: bridgeY - 1.95,
+          z: bz,
+          w: spanOffset * 1.82,
+          h: 0.32,
+          d: twD * 0.56,
+          yaw: roadYaw,
+        });
+        // Helipad on higher twin crown
+        helipadSpecs.push({
+          x: lx,
+          y: BUILDING_GROUND_Y + tH + 0.14,
+          z: lz,
+          rad: Math.min(twW, twD) * 0.34,
+          yaw: roadYaw,
         });
       }
+    } else if (i % 3 === 0) {
+      // Archetype A: Sculpted Tapered Glass Supertall + external diagonal/corner fins + spire + helipad
+      const stories = i % 6 === 0 ? 44 + ((i * 13) % 28) : 26 + ((i * 11) % 18);
+      const h = trackY + stories - BUILDING_GROUND_Y;
+      const spec = { x: bx, y: BUILDING_GROUND_Y, z: bz, w, h, d, yaw: roadYaw };
+
+      if (h < 38) taperedLowE.push(spec);
+      else if (i % 2 === 0) taperedHighE.push(spec);
+      else taperedHighC.push(spec);
+
+      taperedFinsSpecs.push(spec);
+
+      // Crown perimeter LED accent + illuminated spire tip
+      const ledBucket = i % 2 === 0 ? ledCyanSpecs : ledWarmSpecs;
+      ledBucket.push({
+        x: bx,
+        y: BUILDING_GROUND_Y + h * 0.985,
+        z: bz,
+        w: w * 0.56,
+        h: 0.48,
+        d: d * 0.56,
+        yaw: roadYaw,
+      });
+      ledBucket.push({
+        x: bx,
+        y: BUILDING_GROUND_Y + h * 1.15,
+        z: bz,
+        w: 0.38,
+        h: h * 0.08,
+        d: 0.38,
+        yaw: roadYaw,
+      });
+      if (i % 6 === 0) {
+        helipadSpecs.push({
+          x: bx,
+          y: BUILDING_GROUND_Y + h + 0.15,
+          z: bz,
+          rad: Math.min(w, d) * 0.24,
+          yaw: roadYaw,
+        });
+      }
+    } else {
+      // Archetype B: Smooth Curved Sail & Twisted Helix Glass Skyscrapers
+      const isHelix = i % 2 === 0;
+      const stories = 24 + ((i * 17) % 34);
+      const h = trackY + stories - BUILDING_GROUND_Y;
+      const spec = { x: bx, y: BUILDING_GROUND_Y, z: bz, w, h, d, yaw: roadYaw };
+
+      if (isHelix) {
+        if (i % 4 === 0) helixS.push(spec);
+        else helixE.push(spec);
+      } else {
+        if (i % 4 === 1) sailC.push(spec);
+        else sailS.push(spec);
+      }
+
+      // Vertical glowing architectural light strip facing circuit
+      const stripX = bx + (nearR.x * (-side)) * (w * 0.36);
+      const stripZ = bz + (nearR.z * (-side)) * (d * 0.36);
+      const ledBucket = isHelix ? ledCyanSpecs : ledWarmSpecs;
+      ledBucket.push({
+        x: stripX,
+        y: BUILDING_GROUND_Y + h * 0.54,
+        z: stripZ,
+        w: 0.36,
+        h: h * 0.82,
+        d: 0.36,
+        yaw: roadYaw,
+      });
     }
   }
 
   const dummy = new THREE.Object3D();
-  const cTmp = new THREE.Color();
 
-  const spawnInstancedBuildings = (specs, geo, mat) => {
+  const spawnTowerBatch = (specs, geo, mat, cast = true) => {
     if (!specs.length) return;
     const im = new THREE.InstancedMesh(geo, mat, specs.length);
-    im.castShadow = true;
+    im.castShadow = cast;
     im.receiveShadow = true;
     specs.forEach((b, i) => {
       dummy.position.set(b.x, b.y, b.z);
@@ -2066,72 +2416,84 @@ export function buildMonacoTrack(scene) {
       dummy.scale.set(b.w, b.h, b.d);
       dummy.updateMatrix();
       im.setMatrixAt(i, dummy.matrix);
-      im.setColorAt(i, cTmp.setHex(b.col));
     });
     im.instanceMatrix.needsUpdate = true;
-    if (im.instanceColor) im.instanceColor.needsUpdate = true;
     im.computeBoundingSphere();
     scene.add(im);
   };
 
-  spawnInstancedBuildings(aptLowSpecs, makeTiledBuildingGeo(1.5, 1.0), aptMat);
-  spawnInstancedBuildings(aptMidSpecs, makeTiledBuildingGeo(2.0, 1.75), aptMat);
-  spawnInstancedBuildings(aptTallSpecs, makeTiledBuildingGeo(2.0, 2.5), aptMat);
-  spawnInstancedBuildings(aptTowerSpecs, makeTiledBuildingGeo(2.0, 3.25), aptMat);
-  spawnInstancedBuildings(hotelLowSpecs, makeTiledBuildingGeo(2.0, 1.0), hotelMat);
-  spawnInstancedBuildings(hotelMidSpecs, makeTiledBuildingGeo(2.0, 1.75), hotelMat);
-  spawnInstancedBuildings(hotelTallSpecs, makeTiledBuildingGeo(2.0, 2.75), hotelMat);
+  // Archetype A batches
+  spawnTowerBatch(taperedLowE, makeTaperedDiagridTowerGeo(2.5, 2.2), glassEmeraldMat);
+  spawnTowerBatch(taperedHighE, makeTaperedDiagridTowerGeo(2.5, 3.6), glassEmeraldMat);
+  spawnTowerBatch(taperedHighC, makeTaperedDiagridTowerGeo(2.5, 3.6), glassChampagneMat);
+  spawnTowerBatch(taperedFinsSpecs, makeTaperedFinsGeo(), frameMetalMat, false);
 
-  // Sloped Terracotta Roofs & Rooftop Terraces
-  const hipSpecs = roofSpecs.filter((r) => r.type === 'hip');
-  const terSpecs = roofSpecs.filter((r) => r.type === 'terrace');
-  if (hipSpecs.length) {
-    const hipIM = new THREE.InstancedMesh(makeHipRoofGeometry(), roofMat, hipSpecs.length);
-    hipIM.castShadow = true;
-    hipIM.receiveShadow = true;
-    hipSpecs.forEach((r, i) => {
-      dummy.position.set(r.x, r.y, r.z);
-      dummy.rotation.set(0, r.yaw, 0);
-      dummy.scale.set(r.w, r.h, r.d);
+  // Archetype B batches (Twisted Helix & Curved Sail)
+  spawnTowerBatch(helixS, makeTwistedHelixTowerGeo(3.0, 2.8), glassSilverMat);
+  spawnTowerBatch(helixE, makeTwistedHelixTowerGeo(3.0, 2.8), glassEmeraldMat);
+  spawnTowerBatch(sailC, makeCurvedSailTowerGeo(3.0, 2.8), glassChampagneMat);
+  spawnTowerBatch(sailS, makeCurvedSailTowerGeo(3.0, 2.8), glassSilverMat);
+
+  // Archetype C batches (Retail Podiums + Twin Towers + Skybridges)
+  spawnTowerBatch(podiumSpecs, makeChamferedBoxGeo(4.0, 1.0), glassSilverMat);
+  spawnTowerBatch(twinTowerE, makeChamferedBoxGeo(2.5, 3.0), glassEmeraldMat);
+  spawnTowerBatch(twinTowerS, makeChamferedBoxGeo(2.5, 3.0), glassSilverMat);
+  if (skybridgeSpecs.length) {
+    const sbGeo = new THREE.BoxGeometry(1, 1, 1);
+    const sbIM = new THREE.InstancedMesh(sbGeo, glassChampagneMat, skybridgeSpecs.length);
+    sbIM.castShadow = true;
+    skybridgeSpecs.forEach((sb, i) => {
+      dummy.position.set(sb.x, sb.y, sb.z);
+      dummy.rotation.set(0, sb.yaw, 0);
+      dummy.scale.set(sb.w, sb.h, sb.d);
       dummy.updateMatrix();
-      hipIM.setMatrixAt(i, dummy.matrix);
+      sbIM.setMatrixAt(i, dummy.matrix);
     });
-    hipIM.instanceMatrix.needsUpdate = true;
-    hipIM.computeBoundingSphere();
-    scene.add(hipIM);
-  }
-  if (terSpecs.length) {
-    const terGeo = new THREE.BoxGeometry(1, 1, 1);
-    const terIM = new THREE.InstancedMesh(terGeo, terraceMat, terSpecs.length);
-    terIM.receiveShadow = true;
-    terSpecs.forEach((r, i) => {
-      dummy.position.set(r.x, r.y, r.z);
-      dummy.rotation.set(0, r.yaw, 0);
-      dummy.scale.set(r.w, r.h, r.d);
-      dummy.updateMatrix();
-      terIM.setMatrixAt(i, dummy.matrix);
-    });
-    terIM.instanceMatrix.needsUpdate = true;
-    terIM.computeBoundingSphere();
-    scene.add(terIM);
+    sbIM.instanceMatrix.needsUpdate = true;
+    sbIM.computeBoundingSphere();
+    scene.add(sbIM);
   }
 
-  // Ground-floor Storefront Awnings
-  if (awningSpecs.length) {
-    const awnGeo = new THREE.BoxGeometry(1, 0.14, 2.5);
-    const awnIM = new THREE.InstancedMesh(awnGeo, awningMat, awningSpecs.length);
-    awnIM.castShadow = true;
-    awningSpecs.forEach((a, i) => {
-      dummy.position.set(a.x, a.y, a.z);
-      dummy.rotation.set(0.32, a.yaw, 0);
-      dummy.scale.set(a.w, 1, 1);
+  // Archetype D batch (Zaha Hadid Organic Pavilions)
+  spawnTowerBatch(pavilionSpecs, makeOrganicPavilionGeo(2.5, 1.4), zahaMat);
+
+  // Glowing Architectural LED Accent Strips & Spires
+  const spawnLedBatch = (specs, mat) => {
+    if (!specs.length) return;
+    const ledGeo = new THREE.BoxGeometry(1, 1, 1);
+    const ledIM = new THREE.InstancedMesh(ledGeo, mat, specs.length);
+    specs.forEach((l, i) => {
+      dummy.position.set(l.x, l.y, l.z);
+      dummy.rotation.set(0, l.yaw, 0);
+      dummy.scale.set(l.w, l.h, l.d);
       dummy.updateMatrix();
-      awnIM.setMatrixAt(i, dummy.matrix);
+      ledIM.setMatrixAt(i, dummy.matrix);
     });
-    awnIM.instanceMatrix.needsUpdate = true;
-    awnIM.computeBoundingSphere();
-    scene.add(awnIM);
+    ledIM.instanceMatrix.needsUpdate = true;
+    ledIM.computeBoundingSphere();
+    scene.add(ledIM);
+  };
+  spawnLedBatch(ledCyanSpecs, ledCyanMat);
+  spawnLedBatch(ledWarmSpecs, ledWarmMat);
+
+  // Rooftop Helipads
+  if (helipadSpecs.length) {
+    const hpGeo = new THREE.CylinderGeometry(1, 1.05, 0.35, 20);
+    const hpIM = new THREE.InstancedMesh(hpGeo, helipadMat, helipadSpecs.length);
+    hpIM.receiveShadow = true;
+    helipadSpecs.forEach((hp, i) => {
+      dummy.position.set(hp.x, hp.y, hp.z);
+      dummy.rotation.set(0, hp.yaw, 0);
+      dummy.scale.set(hp.rad, 1, hp.rad);
+      dummy.updateMatrix();
+      hpIM.setMatrixAt(i, dummy.matrix);
+    });
+    hpIM.instanceMatrix.needsUpdate = true;
+    hpIM.computeBoundingSphere();
+    scene.add(hpIM);
   }
+
+  const cTmp = new THREE.Color();
 
   // --- Landmark: Monte Carlo Casino at Casino Square (TRACK_POINTS[9]) ---
   const casU = uAtPoint(TRACK_POINTS[9]);
@@ -2213,46 +2575,74 @@ export function buildMonacoTrack(scene) {
     scene.add(casino);
   }
 
-  // --- Palm Trees & Mediterranean Cypress Greenery (InstancedMesh, Strictly On Land) ---
+  // Shared GPU animation uniforms (driven by engine.ts tick at 60 FPS, zero CPU loops)
+  const envTime = { value: 0 };
+  const playerPosUniform = { value: new THREE.Vector3() };
+
+  // --- Palm Trees, Landscaped Marble Planters, Coastal Shrubs & Bougainvillea Hedges ---
   const palmSpecs = [];
   const cypressSpecs = [];
   const planterSpecs = [];
+  const decoPlanterSpecs = [];
 
-  // Harbor promenade palms (along eastern Port Hercule seawall promenade, >=14m inland from water)
-  for (let z = -340; z <= 130; z += 26) {
+  // Harbor promenade palms & bougainvillea planters (along eastern Port Hercule seawall promenade, >=14m inland)
+  for (let z = -340; z <= 130; z += 24) {
     const px = 718;
     if (!isInsideHarborWater(px, z, 12) && nearestSample(px, z).distSq > 260) {
-      palmSpecs.push({ x: px, y: -0.05, z, s: 0.92 + ((Math.abs(z) % 5) * 0.05) });
+      palmSpecs.push({ x: px, y: -0.05, z, s: 0.94 + ((Math.abs(z) % 5) * 0.05) });
+      if (Math.abs(z) % 48 === 0) {
+        decoPlanterSpecs.push({ x: px - 3.2, y: -0.05, z: z + 11, yaw: Math.PI * 0.5, s: 1.05 });
+      }
     }
   }
-  // Circuit & Casino Square palms + hillside cypress trees
-  for (let i = 0; i < 110; i++) {
-    const idx = Math.floor((i / 110) * SAMPLE_COUNT);
+  // Circuit & Casino Square palms + hillside cypress trees + landscaped corner bougainvillea planters
+  for (let i = 0; i < 126; i++) {
+    const idx = Math.floor((i / 126) * SAMPLE_COUNT);
     const p = pos[idx];
     const r = right[idx];
+    const t = tan[idx];
     const side = i % 2 === 0 ? -1 : 1;
     const isPalm = i % 2 === 0;
-    const dist = isPalm ? 13.8 + (i % 3) * 1.4 : 16.5 + (i % 5) * 4.5;
+    const dist = isPalm ? 14.2 + (i % 3) * 1.4 : 17.0 + (i % 5) * 4.5;
     const tx = p.x + r.x * side * dist;
     const tz = p.z + r.z * side * dist;
     if (isInsideHarborWater(tx, tz, 12)) continue;
     const near = nearestSample(tx, tz);
-    if (near.distSq < 185) continue; // strictly outside Armco barriers
+    if (near.distSq < 190) continue; // strictly outside Armco barriers
     const nearY = pos[near.idx].y;
     const ty = nearY > 0.6 ? nearY - 0.15 : -0.25;
     if (ty > 0.2) {
       planterSpecs.push({ x: tx, topY: ty + 0.15, rad: isPalm ? 1.45 : 1.75 });
     }
     if (isPalm) {
-      palmSpecs.push({ x: tx, y: ty, z: tz, s: 0.85 + (i % 4) * 0.12 });
+      palmSpecs.push({ x: tx, y: ty, z: tz, s: 0.88 + (i % 4) * 0.12 });
     } else {
       cypressSpecs.push({ x: tx, y: ty, z: tz, s: 0.85 + (i % 5) * 0.15 });
+    }
+
+    // Add sleek modern marble planters with manicured shrubs & bougainvillea along outside corners
+    if (i % 3 === 1) {
+      const bx = p.x + r.x * -side * 15.2;
+      const bz = p.z + r.z * -side * 15.2;
+      if (!isInsideHarborWater(bx, bz, 12)) {
+        const nearB = nearestSample(bx, bz);
+        if (nearB.distSq >= 205) {
+          const nearBY = pos[nearB.idx].y;
+          decoPlanterSpecs.push({
+            x: bx,
+            y: nearBY > 0.6 ? nearBY - 0.12 : -0.22,
+            z: bz,
+            yaw: Math.atan2(t.x, t.z),
+            s: 0.92 + (i % 3) * 0.12,
+          });
+        }
+      }
     }
   }
 
   if (planterSpecs.length) {
-    const planterGeo = new THREE.CylinderGeometry(1, 1.12, 1, 10);
-    const planterMat = new THREE.MeshStandardMaterial({ color: 0xb9b09f, roughness: 0.85 });
+    const planterGeo = new THREE.CylinderGeometry(1, 1.12, 1, 12);
+    const planterMat = new THREE.MeshStandardMaterial({ color: 0xcbc2b1, roughness: 0.82 });
     const planterIM = new THREE.InstancedMesh(planterGeo, planterMat, planterSpecs.length);
     planterIM.receiveShadow = true;
     planterIM.castShadow = true;
@@ -2270,20 +2660,45 @@ export function buildMonacoTrack(scene) {
   }
 
   if (palmSpecs.length) {
-    const trunkMat = new THREE.MeshStandardMaterial({ map: makePalmTrunkTexture(), roughness: 0.9 });
+    const trunkMat = new THREE.MeshStandardMaterial({ map: makePalmTrunkTexture(), roughness: 0.88 });
+    const frondTex = makePalmFrondTexture();
     const frondMat = new THREE.MeshStandardMaterial({
-      map: makePalmFrondTexture(),
-      alphaTest: 0.42,
+      map: frondTex.map,
+      alphaMap: frondTex.alphaMap,
+      alphaTest: 0.4,
+      vertexColors: true,
       side: THREE.DoubleSide,
-      roughness: 0.72,
+      roughness: 0.68,
     });
+    frondMat.customProgramCacheKey = () => 'monaco_palm_breeze_v1';
+    frondMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uEnvTime = envTime;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>\nuniform float uEnvTime;`)
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+          vec3 palmOrigin = vec3(0.0);
+          #ifdef USE_INSTANCING
+            palmOrigin = (instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+          #endif
+          float palmPhase = fract(sin(dot(palmOrigin.xz, vec2(12.9898, 78.233))) * 43758.5453) * 6.2831;
+          float tipFlex = clamp(length(position.xz) * 0.28, 0.0, 1.25);
+          float breeze = sin(uEnvTime * 1.65 + palmPhase + position.x * 0.45 + position.z * 0.35);
+          float gust = cos(uEnvTime * 0.85 + palmPhase * 1.7) * 0.55;
+          transformed.y += (breeze + gust) * 0.14 * tipFlex * tipFlex;
+          transformed.xz += vec2(breeze, gust) * 0.07 * tipFlex;`
+        );
+    };
+
     const trunkIM = new THREE.InstancedMesh(makePalmTrunkGeometry(), trunkMat, palmSpecs.length);
     const crownIM = new THREE.InstancedMesh(makePalmCrownGeometry(), frondMat, palmSpecs.length);
     trunkIM.castShadow = true;
     crownIM.castShadow = true;
 
+    const palmTints = [0xf8fff0, 0xe8ffd6, 0xd8f8c4, 0xf2ffe6];
     palmSpecs.forEach((pt, i) => {
-      const h = 7.4 * pt.s;
+      const h = 7.6 * pt.s;
       const yaw = (i * 1.73) % (Math.PI * 2);
       dummy.position.set(pt.x, pt.y, pt.z);
       dummy.rotation.set(0, yaw, 0);
@@ -2291,23 +2706,112 @@ export function buildMonacoTrack(scene) {
       dummy.updateMatrix();
       trunkIM.setMatrixAt(i, dummy.matrix);
 
-      // Crown sits at top of curved trunk
-      const topBendX = Math.sin(Math.PI * 0.85) * 0.09 * pt.s;
-      dummy.position.set(pt.x + Math.cos(yaw) * topBendX, pt.y + h - 0.2, pt.z - Math.sin(yaw) * topBendX);
+      // Crown anchored cleanly onto top of curved trunk
+      const topBendX = Math.sin(Math.PI * 0.78) * 0.14 * pt.s;
+      dummy.position.set(pt.x + Math.cos(yaw) * topBendX, pt.y + h - 0.14, pt.z - Math.sin(yaw) * topBendX);
       dummy.rotation.set(0, yaw, 0);
       dummy.scale.setScalar(pt.s);
       dummy.updateMatrix();
       crownIM.setMatrixAt(i, dummy.matrix);
+      crownIM.setColorAt(i, cTmp.setHex(palmTints[i % palmTints.length]));
     });
     trunkIM.instanceMatrix.needsUpdate = true;
     crownIM.instanceMatrix.needsUpdate = true;
+    if (crownIM.instanceColor) crownIM.instanceColor.needsUpdate = true;
     trunkIM.computeBoundingSphere();
     crownIM.computeBoundingSphere();
     scene.add(trunkIM, crownIM);
   }
 
+  // Landscaped Corner & Promenade Marble Planters with Shrubs & Magenta/Crimson Bougainvillea
+  if (decoPlanterSpecs.length) {
+    const stoneBoxGeo = mergeBoxParts([
+      { w: 4.4, h: 0.65, d: 1.5, x: 0, y: 0.325, z: 0 },
+      { w: 4.65, h: 0.14, d: 1.72, x: 0, y: 0.66, z: 0 },
+    ]);
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0xe6e0d4, roughness: 0.75, metalness: 0.05 });
+    const stoneIM = new THREE.InstancedMesh(stoneBoxGeo, stoneMat, decoPlanterSpecs.length);
+    stoneIM.castShadow = true;
+    stoneIM.receiveShadow = true;
+
+    const plinthGeo = new THREE.BoxGeometry(4.4, 1, 1.5);
+    const plinthIM = new THREE.InstancedMesh(plinthGeo, stoneMat, decoPlanterSpecs.length);
+
+    const hedgeGeo = new THREE.IcosahedronGeometry(1, 2);
+    const hedgeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88 });
+    const shrubCount = decoPlanterSpecs.length * 4;
+    const shrubIM = new THREE.InstancedMesh(hedgeGeo, hedgeMat, shrubCount);
+    shrubIM.castShadow = true;
+    shrubIM.receiveShadow = true;
+
+    const bloomGeo = new THREE.IcosahedronGeometry(1, 1);
+    const bloomMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.65 });
+    const bloomCount = decoPlanterSpecs.length * 6;
+    const bloomIM = new THREE.InstancedMesh(bloomGeo, bloomMat, bloomCount);
+
+    const greenShades = [0x225a2c, 0x2d7034, 0x3b843c, 0x1c4b25];
+    const bloomPalette = [0xd91b6b, 0xe11d48, 0xc026d3, 0xf43f5e];
+
+    decoPlanterSpecs.forEach((dp, i) => {
+      const hSub = Math.max(0.4, dp.y - BUILDING_GROUND_Y);
+      dummy.position.set(dp.x, BUILDING_GROUND_Y + hSub * 0.5, dp.z);
+      dummy.rotation.set(0, dp.yaw, 0);
+      dummy.scale.set(dp.s, hSub, dp.s);
+      dummy.updateMatrix();
+      plinthIM.setMatrixAt(i, dummy.matrix);
+
+      dummy.position.set(dp.x, dp.y, dp.z);
+      dummy.rotation.set(0, dp.yaw, 0);
+      dummy.scale.setScalar(dp.s);
+      dummy.updateMatrix();
+      stoneIM.setMatrixAt(i, dummy.matrix);
+
+      const cosY = Math.cos(dp.yaw);
+      const sinY = Math.sin(dp.yaw);
+      for (let k = 0; k < 4; k++) {
+        const lx = (-1.35 + k * 0.9) * dp.s;
+        const lz = ((k % 2 === 0) ? -0.14 : 0.14) * dp.s;
+        const rx = dp.x + lx * cosY + lz * sinY;
+        const rz = dp.z - lx * sinY + lz * cosY;
+        const sRad = (0.58 + ((i + k) % 3) * 0.11) * dp.s;
+        dummy.position.set(rx, dp.y + 0.88 * dp.s, rz);
+        dummy.rotation.set(0, (i + k) * 0.7, 0);
+        dummy.scale.set(sRad * 1.15, sRad * 0.88, sRad);
+        dummy.updateMatrix();
+        shrubIM.setMatrixAt(i * 4 + k, dummy.matrix);
+        shrubIM.setColorAt(i * 4 + k, cTmp.setHex(greenShades[(i + k) % greenShades.length]));
+      }
+
+      for (let b = 0; b < 6; b++) {
+        const lx = (-1.55 + b * 0.62) * dp.s;
+        const lz = ((b % 2 === 0) ? 0.28 : -0.26) * dp.s;
+        const rx = dp.x + lx * cosY + lz * sinY;
+        const rz = dp.z - lx * sinY + lz * cosY;
+        const bRad = (0.24 + ((i + b) % 2) * 0.08) * dp.s;
+        dummy.position.set(rx, dp.y + (1.06 + (b % 3) * 0.13) * dp.s, rz);
+        dummy.rotation.set(b * 0.5, i + b, 0);
+        dummy.scale.set(bRad * 1.2, bRad * 0.9, bRad);
+        dummy.updateMatrix();
+        bloomIM.setMatrixAt(i * 6 + b, dummy.matrix);
+        bloomIM.setColorAt(i * 6 + b, cTmp.setHex(bloomPalette[(i + b) % bloomPalette.length]));
+      }
+    });
+
+    plinthIM.instanceMatrix.needsUpdate = true;
+    stoneIM.instanceMatrix.needsUpdate = true;
+    shrubIM.instanceMatrix.needsUpdate = true;
+    bloomIM.instanceMatrix.needsUpdate = true;
+    if (shrubIM.instanceColor) shrubIM.instanceColor.needsUpdate = true;
+    if (bloomIM.instanceColor) bloomIM.instanceColor.needsUpdate = true;
+    plinthIM.computeBoundingSphere();
+    stoneIM.computeBoundingSphere();
+    shrubIM.computeBoundingSphere();
+    bloomIM.computeBoundingSphere();
+    scene.add(plinthIM, stoneIM, shrubIM, bloomIM);
+  }
+
   if (cypressSpecs.length) {
-    const cypGeo = new THREE.ConeGeometry(1.35, 7.2, 8);
+    const cypGeo = new THREE.ConeGeometry(1.35, 7.2, 10);
     cypGeo.translate(0, 3.6, 0);
     const cypMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88 });
     const cypIM = new THREE.InstancedMesh(cypGeo, cypMat, cypressSpecs.length);
@@ -2399,12 +2903,13 @@ export function buildMonacoTrack(scene) {
     }
   }
 
-  // --- Grandstand Bleachers + Instanced Colorful Spectator Crowds ---
+  // --- Grandstand Bleachers + Enthusiastic Animated Cheering Crowds & Team Flags ---
   const grandstandSpots = [
     { u: (startU + 0.015) % 1, side: 1, dist: 19 },
     { u: uAtPoint(TRACK_POINTS[4]), side: -1, dist: 21 },
     { u: uAtPoint(TRACK_POINTS[25]), side: 1, dist: 19 },
     { u: uAtPoint(TRACK_POINTS[27]), side: 1, dist: 19 },
+    { u: uAtPoint(TRACK_POINTS[29]), side: 1, dist: 19 },
     { u: uAtPoint(TRACK_POINTS[31]), side: -1, dist: 20 },
   ];
   const gsSteelMat = new THREE.MeshStandardMaterial({ color: 0x27303d, metalness: 0.65, roughness: 0.4 });
@@ -2443,15 +2948,16 @@ export function buildMonacoTrack(scene) {
       step.receiveShadow = true;
       gsGroup.add(step);
 
-      // Register world positions for spectator crowd instances
-      for (let s = -11.5; s <= 11.5; s += 1.25) {
-        const localV = new THREE.Vector3(s, 1.35 + tier * 1.15, -tier * 1.55 + 0.1);
+      // Register world positions for spectator crowd instances (seated/cheering flush on step)
+      for (let s = -11.6; s <= 11.6; s += 1.05) {
+        const localV = new THREE.Vector3(s, 1.12 + tier * 1.15, -tier * 1.55 + 0.12);
         localV.applyAxisAngle(new THREE.Vector3(0, 1, 0), gsGroup.rotation.y);
         crowdCoords.push({
           x: gx + localV.x,
           y: p.y + localV.y,
           z: gz + localV.z,
           yaw: gsGroup.rotation.y,
+          hasFlag: ((Math.round((s + 12) * 3) + tier) % 4 === 0),
         });
       }
     }
@@ -2471,27 +2977,101 @@ export function buildMonacoTrack(scene) {
     gsGroup.add(canopy, fascia);
     scene.add(gsGroup);
 
-    // Keep track tangent referenced cleanly (no unused warning)
     void t;
   }
 
   if (crowdCoords.length) {
-    const specGeo = new THREE.CylinderGeometry(0.24, 0.32, 0.85, 6);
-    const specMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82 });
-    const crowdIM = new THREE.InstancedMesh(specGeo, specMat, crowdCoords.length);
-    const crowdPalette = [0xe10600, 0xf2efe6, 0x00d2be, 0x3b82f6, 0xffc83d, 0x1e293b, 0xff784f];
+    const injectCrowdCheerShader = (mat, key, isFlag = false) => {
+      mat.customProgramCacheKey = () => key;
+      mat.onBeforeCompile = (shader) => {
+        shader.uniforms.uEnvTime = envTime;
+        shader.uniforms.uPlayerPos = playerPosUniform;
+        shader.vertexShader = shader.vertexShader
+          .replace(
+            '#include <common>',
+            `#include <common>\nuniform float uEnvTime;\nuniform vec3 uPlayerPos;`
+          )
+          .replace(
+            '#include <begin_vertex>',
+            `#include <begin_vertex>
+            vec3 fanOrigin = vec3(0.0);
+            #ifdef USE_INSTANCING
+              fanOrigin = (instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+            #endif
+            float fanPhase = fract(sin(dot(fanOrigin.xz, vec2(19.13, 91.7))) * 29431.7) * 6.2831;
+            float dCar = length(fanOrigin.xz - uPlayerPos.xz);
+            float hype = 1.0 + 1.4 * smoothstep(75.0, 14.0, dCar);
+            float cheerBounce = abs(sin(uEnvTime * (3.5 + hype * 1.2) + fanPhase)) * 0.14 * hype;
+            transformed.y += cheerBounce;
+            ${
+              isFlag
+                ? `
+            float clothMask = smoothstep(0.04, 0.25, position.x);
+            transformed.z += sin(uEnvTime * 9.5 + fanPhase + position.x * 5.4) * 0.22 * clothMask * hype;
+            transformed.y += cos(uEnvTime * 8.0 + fanPhase + position.x * 4.2) * 0.06 * clothMask * hype;`
+                : `
+            float armMask = smoothstep(0.32, 0.62, position.y);
+            transformed.y += sin(uEnvTime * 7.8 + fanPhase) * 0.065 * armMask * hype;`
+            }`
+          );
+      };
+    };
+
+    const torsoGeo = makeSpectatorTorsoArmsGeometry();
+    const torsoMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.78 });
+    injectCrowdCheerShader(torsoMat, 'monaco_crowd_torso_v1', false);
+
+    const headGeo = new THREE.SphereGeometry(0.16, 10, 8);
+    headGeo.translate(0, 0.88, 0);
+    const headMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72 });
+    injectCrowdCheerShader(headMat, 'monaco_crowd_head_v1', false);
+
+    const torsoIM = new THREE.InstancedMesh(torsoGeo, torsoMat, crowdCoords.length);
+    const headIM = new THREE.InstancedMesh(headGeo, headMat, crowdCoords.length);
+
+    const flagSpecs = crowdCoords.filter((c) => c.hasFlag);
+    const flagMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, side: THREE.DoubleSide });
+    injectCrowdCheerShader(flagMat, 'monaco_crowd_flag_v1', true);
+    const flagIM = flagSpecs.length
+      ? new THREE.InstancedMesh(makeCrowdFlagGeometry(), flagMat, flagSpecs.length)
+      : null;
+
+    const crowdPalette = [0xe10600, 0xf2efe6, 0x00d2be, 0x3b82f6, 0xffc83d, 0xff8000, 0x10b981, 0x1e293b];
+    const headPalette = [0xf2c9ac, 0xd8a17e, 0x8d5524, 0xe10600, 0x00d2be, 0x3b82f6, 0xffc83d];
+
     crowdCoords.forEach((spSpec, i) => {
+      const sy = 0.92 + (i % 3) * 0.09;
       dummy.position.set(spSpec.x, spSpec.y, spSpec.z);
       dummy.rotation.set(0, spSpec.yaw, 0);
-      dummy.scale.set(1, 0.9 + (i % 3) * 0.1, 1);
+      dummy.scale.set(1, sy, 1);
       dummy.updateMatrix();
-      crowdIM.setMatrixAt(i, dummy.matrix);
-      crowdIM.setColorAt(i, cTmp.setHex(crowdPalette[(i * 7) % crowdPalette.length]));
+      torsoIM.setMatrixAt(i, dummy.matrix);
+      headIM.setMatrixAt(i, dummy.matrix);
+      torsoIM.setColorAt(i, cTmp.setHex(crowdPalette[(i * 7) % crowdPalette.length]));
+      headIM.setColorAt(i, cTmp.setHex(headPalette[(i * 5) % headPalette.length]));
     });
-    crowdIM.instanceMatrix.needsUpdate = true;
-    if (crowdIM.instanceColor) crowdIM.instanceColor.needsUpdate = true;
-    crowdIM.computeBoundingSphere();
-    scene.add(crowdIM);
+    torsoIM.instanceMatrix.needsUpdate = true;
+    headIM.instanceMatrix.needsUpdate = true;
+    if (torsoIM.instanceColor) torsoIM.instanceColor.needsUpdate = true;
+    if (headIM.instanceColor) headIM.instanceColor.needsUpdate = true;
+    torsoIM.computeBoundingSphere();
+    headIM.computeBoundingSphere();
+    scene.add(torsoIM, headIM);
+
+    if (flagIM) {
+      flagSpecs.forEach((fs, i) => {
+        dummy.position.set(fs.x + 0.25, fs.y + 0.32, fs.z);
+        dummy.rotation.set(0, fs.yaw + ((i % 3) - 1) * 0.25, 0);
+        dummy.scale.setScalar(1.0);
+        dummy.updateMatrix();
+        flagIM.setMatrixAt(i, dummy.matrix);
+        flagIM.setColorAt(i, cTmp.setHex(crowdPalette[(i * 3) % crowdPalette.length]));
+      });
+      flagIM.instanceMatrix.needsUpdate = true;
+      if (flagIM.instanceColor) flagIM.instanceColor.needsUpdate = true;
+      flagIM.computeBoundingSphere();
+      scene.add(flagIM);
+    }
   }
 
   // --- Armco Barrier Sponsor Boards (4 Crisp High-Res Circuit Sponsors via InstancedMesh) ---
@@ -2586,6 +3166,95 @@ export function buildMonacoTrack(scene) {
     scene.add(yacht);
   }
 
+  // --- Trackside Repair Coins / Aero-Repair Tokens (14 glowing golden-cyan pickups) ---
+  const tokenSpots = [
+    { u: (startU + 0.055) % 1, lat: -2.4 }, // Sainte Devote exit
+    { u: (startU + 0.115) % 1, lat: 2.2 },  // Beau Rivage climb
+    { u: (startU + 0.180) % 1, lat: -1.8 }, // Massenet sweep
+    { u: (startU + 0.245) % 1, lat: 2.5 },  // Casino Square exit
+    { u: (startU + 0.310) % 1, lat: -2.2 }, // Mirabeau approach
+    { u: (startU + 0.380) % 1, lat: 2.4 },  // Fairmont Hairpin exit
+    { u: (startU + 0.445) % 1, lat: -2.1 }, // Portier apex
+    { u: (startU + 0.515) % 1, lat: 0.0 },  // Monaco Tunnel racing line
+    { u: (startU + 0.585) % 1, lat: -2.4 }, // Tunnel exit / Chicane braking
+    { u: (startU + 0.655) % 1, lat: 2.2 },  // Nouvelle Chicane exit
+    { u: (startU + 0.725) % 1, lat: -2.0 }, // Tabac corner exit
+    { u: (startU + 0.795) % 1, lat: 2.3 },  // Piscine complex
+    { u: (startU + 0.865) % 1, lat: -2.2 }, // La Rascasse exit
+    { u: (startU + 0.935) % 1, lat: 1.8 },  // Anthony Noghes exit
+  ];
+
+  const coinOuterGeo = new THREE.TorusGeometry(0.62, 0.095, 12, 28);
+  const coinCoreGeo = new THREE.CylinderGeometry(0.49, 0.49, 0.10, 24);
+  coinCoreGeo.rotateX(Math.PI / 2);
+  const wrenchBarV = new THREE.BoxGeometry(0.14, 0.54, 0.16);
+  const wrenchBarH = new THREE.BoxGeometry(0.54, 0.14, 0.16);
+  const coinGroundGeo = new THREE.RingGeometry(0.55, 0.78, 28);
+  coinGroundGeo.rotateX(-Math.PI / 2);
+
+  const coinGoldMat = new THREE.MeshStandardMaterial({
+    color: 0xfacc15,
+    emissive: 0xd97706,
+    emissiveIntensity: 0.75,
+    metalness: 0.85,
+    roughness: 0.18,
+  });
+  const coinCyanMat = new THREE.MeshStandardMaterial({
+    color: 0x00f0ff,
+    emissive: 0x00d2be,
+    emissiveIntensity: 1.45,
+    metalness: 0.35,
+    roughness: 0.15,
+  });
+  const coinGroundMat = new THREE.MeshBasicMaterial({
+    color: 0x00f0ff,
+    transparent: true,
+    opacity: 0.48,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+
+  const repairTokens = tokenSpots.map((sp, i) => {
+    const idx = Math.round(sp.u * SAMPLE_COUNT) % SAMPLE_COUNT;
+    const p = pos[idx];
+    const r = right[idx];
+    const lat = THREE.MathUtils.clamp(sp.lat, -(HALF_WIDTH - 2.6), HALF_WIDTH - 2.6);
+    const tx = p.x + r.x * lat;
+    const ty = p.y;
+    const tz = p.z + r.z * lat;
+
+    const group = new THREE.Group();
+    group.position.set(tx, ty, tz);
+
+    const core = new THREE.Group();
+    core.position.y = 0.82;
+    core.rotation.y = i * 0.7;
+
+    const outer = new THREE.Mesh(coinOuterGeo, coinGoldMat);
+    const disc = new THREE.Mesh(coinCoreGeo, coinCyanMat);
+    const barV = new THREE.Mesh(wrenchBarV, coinGoldMat);
+    const barH = new THREE.Mesh(wrenchBarH, coinGoldMat);
+    core.add(outer, disc, barV, barH);
+
+    const groundRing = new THREE.Mesh(coinGroundGeo, coinGroundMat);
+    groundRing.position.y = 0.04;
+
+    group.add(core, groundRing);
+    scene.add(group);
+
+    return {
+      group,
+      core,
+      groundRing,
+      basePos: new THREE.Vector3(tx, ty, tz),
+      u: sp.u,
+      phase: i * 0.65,
+      cooldown: 0,
+      active: true,
+    };
+  });
+
   // Checkpoints (checkpoints[0] MUST align with startFinishLine.u)
   const checkpoints = [
     { u: startU, name: 'Start / Finish' },
@@ -2606,6 +3275,8 @@ export function buildMonacoTrack(scene) {
       halfWidth: HALF_WIDTH,
       waterMaterial,
       tunnel: { uStart: tunnelStart, uEnd: tunnelEnd },
+      envTime,
+      playerPos: playerPosUniform,
     },
   };
 
@@ -2614,5 +3285,6 @@ export function buildMonacoTrack(scene) {
     startFinishLine: { u: startU, lights: gantryLights },
     drsZones,
     checkpoints,
+    repairTokens,
   };
 }

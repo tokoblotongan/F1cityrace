@@ -290,28 +290,59 @@ function tone(freq, dur = 0.15, gain = 0.12, delay = 0, type = 'sine') {
 }
 function thud(hit) {
   burst({ freq: 220, gain: 0.45 * hit, dur: 0.3 });
+  // Metallic chassis crunch & scrape overtone
+  burst({ type: 'bandpass', freq: 1450, q: 1.8, gain: 0.28 * hit, dur: 0.22, sweepTo: 520 });
   if (!audioReady || !ctx) return;
   const t = ctx.currentTime;
   const o = ctx.createOscillator(); o.type = 'sine';
-  o.frequency.setValueAtTime(130, t); o.frequency.exponentialRampToValueAtTime(38, t + 0.24);
+  o.frequency.setValueAtTime(135, t); o.frequency.exponentialRampToValueAtTime(36, t + 0.24);
   const g = ctx.createGain();
-  g.gain.setValueAtTime(0.4 * hit, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+  g.gain.setValueAtTime(0.42 * hit, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
   o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.3);
+
+  const m = ctx.createOscillator(); m.type = 'sawtooth';
+  m.frequency.setValueAtTime(420, t); m.frequency.exponentialRampToValueAtTime(110, t + 0.14);
+  const mg = ctx.createGain();
+  mg.gain.setValueAtTime(0.14 * hit, t); mg.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+  m.connect(mg); mg.connect(master); m.start(t); m.stop(t + 0.16);
+}
+
+export function playRepairSound() {
+  if (!audioReady || !ctx) return;
+  tone(880, 0.12, 0.14, 0, 'triangle');
+  tone(1174.66, 0.14, 0.14, 0.06, 'triangle');
+  tone(1567.98, 0.22, 0.15, 0.12, 'triangle');
+  burst({ type: 'highpass', freq: 2400, q: 2.0, gain: 0.07, dur: 0.06 });
+}
+
+export function playDnfSound() {
+  if (!audioReady || !ctx) return;
+  const t = ctx.currentTime;
+  const o = ctx.createOscillator(); o.type = 'sawtooth';
+  o.frequency.setValueAtTime(240, t);
+  o.frequency.exponentialRampToValueAtTime(48, t + 0.7);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.22, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.72);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.75);
+  tone(220, 0.45, 0.14, 0.05, 'triangle');
+  tone(164.8, 0.55, 0.14, 0.22, 'triangle');
 }
 
 export function updateAudio(carState) {
   if (carState) latestCarState = carState;
   if (!audioReady || !ctx || !carState) return;
   const t = ctx.currentTime;
+  const isDead = !!carState.isDead;
   const rpm = carState.rpm || 4200;
   const f = Math.max(30, (rpm / 60) * 3);
   const rpmFrac = clamp((rpm - 4200) / 8100, 0, 1);
-  const thr = carState.throttle ?? 0;
+  const thr = isDead ? 0 : (carState.throttle ?? 0);
   const speedFrac = clamp((carState.speedKmh || 0) / 340, 0, 1);
 
   for (const L of engine.oscs) L.o.frequency.setTargetAtTime(f * L.mult, t, 0.03);
   engine.filter.frequency.setTargetAtTime(500 + rpmFrac * 5200 + thr * 1200, t, 0.05);
-  let vol = 0.09 + thr * 0.17 + speedFrac * 0.05;
+  let vol = isDead ? 0 : (0.09 + thr * 0.17 + speedFrac * 0.05);
   if (carState.gear !== prevGear) {
     if (carState.gear > prevGear) burst({ type: 'bandpass', freq: 420, q: 1.2, gain: 0.1, dur: 0.07 });
     shiftCutUntil = t + 0.09;
@@ -320,12 +351,12 @@ export function updateAudio(carState) {
   if (t < shiftCutUntil) vol *= 0.3;
   engine.gain.gain.setTargetAtTime(vol, t, 0.06);
   engine.turbo.frequency.setTargetAtTime(900 + rpmFrac * 2800, t, 0.08);
-  engine.tg.gain.setTargetAtTime(thr * rpmFrac * 0.035, t, 0.1);
+  engine.tg.gain.setTargetAtTime(isDead ? 0 : thr * rpmFrac * 0.035, t, 0.1);
 
-  const slide = carState.isSliding ? clamp((carState.lateralG || 2) / 5, 0.2, 1) : 0;
+  const slide = !isDead && carState.isSliding ? clamp((carState.lateralG || 2) / 5, 0.2, 1) : 0;
   screech.g.gain.setTargetAtTime(slide * 0.16 * (0.4 + speedFrac), t, 0.05);
   screech.bp.frequency.setTargetAtTime(1100 + speedFrac * 900, t, 0.1);
-  curb.g.gain.setTargetAtTime(carState.onCurb && carState.speedKmh > 20 ? 0.07 : 0, t, 0.04);
+  curb.g.gain.setTargetAtTime(!isDead && carState.onCurb && carState.speedKmh > 20 ? 0.07 : 0, t, 0.04);
 
   const hit = carState.hitIntensity || 0;
   if (hit > 0.22 && hit > prevHit + 0.12) thud(hit);
@@ -350,7 +381,12 @@ function setMuted(m) {
 // ═══════════════════════════════════════════════════════════════════════════
 let prevLights = 0, prevPhase = null, prevLap = 1, prevBest = null, prevPos = 8;
 let posToastAt = 0, announceTimer = 0, bootDone = false, firstFrame = false;
-let modalOpen = false, finishSig = '', fanfareDone = false;
+let modalOpen = false, dnfOpen = false, finishSig = '', fanfareDone = false, dnfSoundDone = false;
+
+export function notifyRepairPickup(newHealth) {
+  playRepairSound();
+  announce('REPAIR +20%', `CAR INTEGRITY ${Math.round(newHealth)}%`, 'green', 1200);
+}
 
 function announce(text, sub = '', toneCls = '', ms = 1800) {
   if (!els.announce) return;
@@ -383,7 +419,25 @@ function updateTelemetry(cs) {
   }
   if (els.throttle) els.throttle.style.width = `${Math.round((cs.throttle || 0) * 100)}%`;
   if (els.brake) els.brake.style.width = `${Math.round((cs.brake || 0) * 100)}%`;
-  if (els.flash) els.flash.style.opacity = String(clamp((cs.hitIntensity || 0) * 0.6, 0, 0.55));
+
+  // Health / Car Integrity bar
+  const hp = clamp(Math.round(cs.health ?? 100), 0, 100);
+  if (els.healthValue) setText(els.healthValue, `${hp}%`);
+  if (els.healthFill) els.healthFill.style.width = `${hp}%`;
+  if (els.healthWrap) {
+    els.healthWrap.classList.toggle('warn', hp >= 35 && hp < 70);
+    els.healthWrap.classList.toggle('critical', hp > 0 && hp < 35);
+    els.healthWrap.classList.toggle('dead', hp <= 0);
+    els.healthWrap.classList.toggle('repairing', (cs.repairFlash || 0) > 0.1);
+  }
+
+  if (els.flash) {
+    const repairOp = (cs.repairFlash || 0) * 0.42;
+    const hitOp = clamp((cs.hitIntensity || 0) * 0.6, 0, 0.55);
+    const useHeal = repairOp > hitOp;
+    els.flash.classList.toggle('heal', useHeal);
+    els.flash.style.opacity = String(useHeal ? repairOp : hitOp);
+  }
 }
 
 function updateTower(rs) {
@@ -532,6 +586,22 @@ function openFinish(rs) {
     notes.forEach((f, i) => tone(f, 0.5, 0.14, i * 0.16, 'triangle'));
   }
 }
+function openDnf(rs) {
+  dnfOpen = true;
+  setText(els.dnfLap, `LAP ${rs.playerLap} / ${rs.totalLaps}`);
+  setText(els.dnfTime, fmtTime(rs.raceTime || 0));
+  setText(els.dnfPos, `P${rs.playerPosition || 1}`);
+  els.dnfModal?.classList.add('open');
+  if (!dnfSoundDone) {
+    dnfSoundDone = true;
+    playDnfSound();
+  }
+}
+function closeDnf() {
+  dnfOpen = false;
+  dnfSoundDone = false;
+  els.dnfModal?.classList.remove('open');
+}
 function closeFinish() {
   modalOpen = false; fanfareDone = false; finishSig = '';
   els.modal?.classList.remove('open');
@@ -555,10 +625,18 @@ export function updateHUD(raceState) {
   updateLapPanel(raceState);
   updateEvents(raceState, now);
   mmDraw(raceState, now);
-  if (raceState.isFinished) {
-    if (!modalOpen) openFinish(raceState);
-    else renderFinish(raceState);
-  } else if (modalOpen) closeFinish();
+
+  const isDead = !!(latestCarState && latestCarState.isDead);
+  if (isDead) {
+    if (modalOpen) closeFinish();
+    if (!dnfOpen) openDnf(raceState);
+  } else {
+    if (dnfOpen) closeDnf();
+    if (raceState.isFinished) {
+      if (!modalOpen) openFinish(raceState);
+      else renderFinish(raceState);
+    } else if (modalOpen) closeFinish();
+  }
 }
 
 export function initHud() {
@@ -572,16 +650,19 @@ export function initHud() {
     minimap: $('minimap'), minimapLabel: $('minimap-label'), checkpoint: $('checkpoint-name'),
     rpmBar: $('rpm-bar'), gear: $('gear-value'), speed: $('speed-value'), drs: $('drs-badge'),
     throttle: $('throttle-bar'), brake: $('brake-bar'),
+    healthWrap: $('health-wrap'), healthValue: $('health-value'), healthFill: $('health-fill'),
     hint: $('controls-hint'), flash: $('flash'),
     announce: $('announce'), announceText: $('announce-text'), announceSub: $('announce-sub'),
     modal: $('finish-modal'), card: $('finish-card'), finishTitle: $('finish-title'),
     finishSub: $('finish-sub'), podium: $('podium'), finishRows: $('finish-rows'),
     raceAgain: $('race-again'), confetti: $('confetti'),
+    dnfModal: $('gameover-modal'), dnfLap: $('dnf-lap'), dnfTime: $('dnf-time'), dnfPos: $('dnf-pos'),
+    dnfRaceAgain: $('dnf-race-again'),
   };
 
   prevLights = 0; prevPhase = null; prevLap = 1; prevBest = null; prevPos = 8;
   posToastAt = 0; bootDone = false; firstFrame = false;
-  modalOpen = false; finishSig = ''; fanfareDone = false;
+  modalOpen = false; dnfOpen = false; finishSig = ''; fanfareDone = false; dnfSoundDone = false;
 
   towerRows = [];
   if (els.towerRows) {
@@ -620,7 +701,7 @@ export function initHud() {
 
   const onKeyDown = (e) => {
     if (e.code === 'KeyM' && !e.repeat) { initAudio(); setMuted(!muted); }
-    if (e.code === 'Enter' && modalOpen) requestRestart();
+    if (e.code === 'Enter' && (modalOpen || dnfOpen)) requestRestart();
   };
   window.addEventListener('keydown', onKeyDown);
 
@@ -635,6 +716,7 @@ export function initHud() {
   document.addEventListener('visibilitychange', onVisibility);
 
   els.raceAgain?.addEventListener('click', requestRestart);
+  els.dnfRaceAgain?.addEventListener('click', requestRestart);
 
   const touchCleanups = [];
   for (const btn of document.querySelectorAll('.tbtn')) {
@@ -683,6 +765,7 @@ export function initHud() {
     document.removeEventListener('visibilitychange', onVisibility);
     els.audioToggle?.removeEventListener('click', onAudioClick);
     els.raceAgain?.removeEventListener('click', requestRestart);
+    els.dnfRaceAgain?.removeEventListener('click', requestRestart);
     for (const fn of touchCleanups) fn();
   };
 }
