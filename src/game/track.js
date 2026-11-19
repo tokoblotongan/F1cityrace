@@ -888,7 +888,454 @@ function makeSponsorBannerTexture(primary, accent, title, sub) {
 
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 8;
+  tex.anisotropy = 16;
+  return tex;
+}
+
+function makeTopCoolBannerTexture() {
+  const W = 2048;
+  const H = 512;
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const g = c.getContext('2d');
+
+  // Deep motorsport crimson-red & dark carbon-black racing gradient
+  const bg = g.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, '#0b0e14');
+  bg.addColorStop(0.32, '#171c26');
+  bg.addColorStop(0.68, '#a60500');
+  bg.addColorStop(1, '#e10600');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, W, H);
+
+  // Diagonal crimson racing band across center-right & dark carbon wing on left
+  g.fillStyle = '#0e1118';
+  g.beginPath();
+  g.moveTo(0, 0);
+  g.lineTo(W * 0.44, 0);
+  g.lineTo(W * 0.34, H);
+  g.lineTo(0, H);
+  g.closePath();
+  g.fill();
+
+  // Subtle carbon-fiber micro-weave pattern over the dark section
+  g.fillStyle = 'rgba(255, 255, 255, 0.04)';
+  for (let y = 0; y < H; y += 16) {
+    for (let x = (y % 32 === 0 ? 0 : 8); x < W * 0.45; x += 16) {
+      g.fillRect(x, y, 6, 6);
+    }
+  }
+
+  // Deep crimson center-right field
+  const redGrad = g.createLinearGradient(W * 0.34, 0, W, H);
+  redGrad.addColorStop(0, '#960400');
+  redGrad.addColorStop(0.45, '#d40700');
+  redGrad.addColorStop(1, '#7a0300');
+  g.fillStyle = redGrad;
+  g.beginPath();
+  g.moveTo(W * 0.44, 0);
+  g.lineTo(W, 0);
+  g.lineTo(W, H);
+  g.lineTo(W * 0.34, H);
+  g.closePath();
+  g.fill();
+
+  // Metallic silver diagonal accent stripes
+  const silverGrad = g.createLinearGradient(0, 0, 0, H);
+  silverGrad.addColorStop(0, '#f8fafc');
+  silverGrad.addColorStop(0.5, '#94a3b8');
+  silverGrad.addColorStop(1, '#e2e8f0');
+
+  g.fillStyle = silverGrad;
+  g.beginPath();
+  g.moveTo(W * 0.422, 0);
+  g.lineTo(W * 0.445, 0);
+  g.lineTo(W * 0.345, H);
+  g.lineTo(W * 0.322, H);
+  g.closePath();
+  g.fill();
+
+  g.fillStyle = '#ffd60a';
+  g.beginPath();
+  g.moveTo(W * 0.452, 0);
+  g.lineTo(W * 0.464, 0);
+  g.lineTo(W * 0.364, H);
+  g.lineTo(W * 0.352, H);
+  g.closePath();
+  g.fill();
+
+  // Top & bottom metallic silver + crimson racing rails
+  g.fillStyle = silverGrad;
+  g.fillRect(0, 0, W, 18);
+  g.fillRect(0, H - 18, W, 18);
+  g.fillStyle = '#ffd60a';
+  g.fillRect(0, 18, W, 6);
+  g.fillRect(0, H - 24, W, 6);
+
+  // Helper to draw stylized motorsport racing tire icon (tread + silver multi-spoke rim)
+  const drawTireIcon = (cx, cy, rad) => {
+    g.save();
+    // Dynamic yellow/silver speed streaks behind tire
+    for (let s = 0; s < 5; s++) {
+      const sy = cy - rad * 0.65 + s * rad * 0.32;
+      const sl = rad * (1.25 - Math.abs(s - 2) * 0.2);
+      g.fillStyle = s % 2 === 0 ? 'rgba(255, 214, 10, 0.85)' : 'rgba(226, 232, 240, 0.72)';
+      g.fillRect(cx - rad - sl * 0.85, sy, sl * 0.75, 10);
+    }
+
+    // Outer tire carcass + directional tread grooves
+    g.beginPath();
+    g.arc(cx, cy, rad, 0, Math.PI * 2);
+    const tireGrad = g.createRadialGradient(cx - rad * 0.25, cy - rad * 0.25, rad * 0.3, cx, cy, rad);
+    tireGrad.addColorStop(0, '#303642');
+    tireGrad.addColorStop(0.75, '#171a21');
+    tireGrad.addColorStop(1, '#090b0f');
+    g.fillStyle = tireGrad;
+    g.fill();
+
+    // Tread notches around circumference
+    g.strokeStyle = '#07090c';
+    g.lineWidth = 10;
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 10) {
+      g.beginPath();
+      g.moveTo(cx + Math.cos(a) * rad * 0.80, cy + Math.sin(a) * rad * 0.80);
+      g.lineTo(cx + Math.cos(a + 0.14) * rad * 0.99, cy + Math.sin(a + 0.14) * rad * 0.99);
+      g.stroke();
+    }
+
+    // Yellow & Crimson motorsport compound sidewall stripe
+    g.strokeStyle = '#ffd60a';
+    g.lineWidth = 12;
+    g.beginPath();
+    g.arc(cx, cy, rad * 0.72, -0.4, Math.PI * 0.72);
+    g.stroke();
+    g.strokeStyle = '#ff2d1a';
+    g.beginPath();
+    g.arc(cx, cy, rad * 0.72, Math.PI * 0.9, Math.PI * 1.85);
+    g.stroke();
+
+    // Metallic silver inner rim & spokes
+    g.beginPath();
+    g.arc(cx, cy, rad * 0.56, 0, Math.PI * 2);
+    const rimGrad = g.createRadialGradient(cx - 18, cy - 18, 10, cx, cy, rad * 0.56);
+    rimGrad.addColorStop(0, '#f8fafc');
+    rimGrad.addColorStop(0.6, '#94a3b8');
+    rimGrad.addColorStop(1, '#475569');
+    g.fillStyle = rimGrad;
+    g.fill();
+
+    g.beginPath();
+    g.arc(cx, cy, rad * 0.44, 0, Math.PI * 2);
+    g.fillStyle = '#11151d';
+    g.fill();
+
+    // 5 metallic spokes
+    g.strokeStyle = '#e2e8f0';
+    g.lineWidth = 14;
+    g.lineCap = 'round';
+    for (let sp = 0; sp < 5; sp++) {
+      const ang = (sp / 5) * Math.PI * 2 - 0.3;
+      g.beginPath();
+      g.moveTo(cx, cy);
+      g.lineTo(cx + Math.cos(ang) * rad * 0.46, cy + Math.sin(ang) * rad * 0.46);
+      g.stroke();
+    }
+
+    // Center lock nut
+    g.beginPath();
+    g.arc(cx, cy, rad * 0.15, 0, Math.PI * 2);
+    g.fillStyle = '#e10600';
+    g.fill();
+    g.strokeStyle = '#f8fafc';
+    g.lineWidth = 4;
+    g.stroke();
+    g.restore();
+  };
+
+  drawTireIcon(290, H * 0.5, 148);
+  drawTireIcon(W - 220, H * 0.5, 118);
+
+  // Bold Italic Racing Typography: "TOP COOL"
+  g.save();
+  g.textBaseline = 'middle';
+  g.font = 'italic 900 182px "Arial Black", Impact, "Segoe UI", sans-serif';
+  const textX = W * 0.53;
+  const textY = H * 0.43;
+
+  // Measure combined width to center "TOP " + "COOL" cleanly
+  const wTop = g.measureText('TOP ').width;
+  const wCool = g.measureText('COOL').width;
+  const startX = textX - (wTop + wCool) * 0.5;
+
+  g.textAlign = 'left';
+  g.shadowColor = 'rgba(0, 0, 0, 0.72)';
+  g.shadowBlur = 18;
+  g.shadowOffsetX = 6;
+  g.shadowOffsetY = 8;
+
+  // Crisp dark outline
+  g.lineWidth = 16;
+  g.lineJoin = 'round';
+  g.strokeStyle = '#090b10';
+  g.strokeText('TOP ', startX, textY);
+  g.strokeText('COOL', startX + wTop, textY);
+
+  // "TOP" in championship yellow-gold gradient, "COOL" in bright pure white
+  const topGrad = g.createLinearGradient(0, textY - 85, 0, textY + 85);
+  topGrad.addColorStop(0, '#fff3b0');
+  topGrad.addColorStop(0.45, '#ffd60a');
+  topGrad.addColorStop(1, '#f59e0b');
+  g.fillStyle = topGrad;
+  g.fillText('TOP ', startX, textY);
+
+  const coolGrad = g.createLinearGradient(0, textY - 85, 0, textY + 85);
+  coolGrad.addColorStop(0, '#ffffff');
+  coolGrad.addColorStop(0.7, '#f1f5f9');
+  coolGrad.addColorStop(1, '#cbd5e1');
+  g.fillStyle = coolGrad;
+  g.fillText('COOL', startX + wTop, textY);
+  g.restore();
+
+  // Subtle subtitle "PERFORMANCE TIRES" flanked by silver bars
+  g.save();
+  g.font = '800 42px "Segoe UI", system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillStyle = '#f8fafc';
+  g.shadowColor = 'rgba(0, 0, 0, 0.65)';
+  g.shadowBlur = 8;
+  const subTxt = 'P E R F O R M A N C E   T I R E S';
+  g.fillText(subTxt, textX, H * 0.77);
+
+  g.fillStyle = '#e2e8f0';
+  g.fillRect(textX - 460, H * 0.77 - 3, 115, 6);
+  g.fillRect(textX + 345, H * 0.77 - 3, 115, 6);
+  g.restore();
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 16;
+  return tex;
+}
+
+function makeEsLumutJuniBannerTexture() {
+  const W = 1536;
+  const H = 384;
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const g = c.getContext('2d');
+
+  // Fresh emerald-pandan green & icy-cyan gradient background
+  const bg = g.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, '#047857');
+  bg.addColorStop(0.32, '#10b981');
+  bg.addColorStop(0.68, '#06b6d4');
+  bg.addColorStop(1, '#0284c7');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, W, H);
+
+  // Flowing icy-cyan wave splash across the bottom-right
+  g.fillStyle = 'rgba(165, 243, 252, 0.24)';
+  g.beginPath();
+  g.moveTo(0, H * 0.72);
+  g.bezierCurveTo(W * 0.28, H * 0.42, W * 0.62, H * 0.94, W, H * 0.46);
+  g.lineTo(W, H);
+  g.lineTo(0, H);
+  g.closePath();
+  g.fill();
+
+  // Secondary creamy pandan-milk swirl
+  g.fillStyle = 'rgba(236, 253, 245, 0.16)';
+  g.beginPath();
+  g.moveTo(0, H * 0.28);
+  g.bezierCurveTo(W * 0.35, H * 0.08, W * 0.68, H * 0.48, W, H * 0.16);
+  g.lineTo(W, 0);
+  g.lineTo(0, 0);
+  g.closePath();
+  g.fill();
+
+  // Frosty ice-cube helper
+  const drawIceCube = (ix, iy, sz, rot, alpha = 0.38) => {
+    g.save();
+    g.translate(ix, iy);
+    g.rotate(rot);
+    g.fillStyle = `rgba(224, 242, 254, ${alpha})`;
+    g.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    g.lineWidth = 4;
+    const r = sz * 0.18;
+    const hw = sz * 0.5;
+    g.beginPath();
+    g.moveTo(-hw + r, -hw);
+    g.lineTo(hw - r, -hw);
+    g.quadraticCurveTo(hw, -hw, hw, -hw + r);
+    g.lineTo(hw, hw - r);
+    g.quadraticCurveTo(hw, hw, hw - r, hw);
+    g.lineTo(-hw + r, hw);
+    g.quadraticCurveTo(-hw, hw, -hw, hw - r);
+    g.lineTo(-hw, -hw + r);
+    g.quadraticCurveTo(-hw, -hw, -hw + r, -hw);
+    g.closePath();
+    g.fill();
+    g.stroke();
+
+    // Inner specular highlight facet
+    g.fillStyle = 'rgba(255, 255, 255, 0.45)';
+    g.fillRect(-hw * 0.62, -hw * 0.62, sz * 0.38, sz * 0.14);
+    g.restore();
+  };
+
+  // Scattered ice cubes & refreshing splash droplets
+  drawIceCube(370, 84, 54, -0.35, 0.34);
+  drawIceCube(1260, 110, 62, 0.28, 0.42);
+  drawIceCube(1370, 252, 74, -0.22, 0.44);
+  drawIceCube(1455, 130, 44, 0.5, 0.36);
+
+  for (const [dx, dy, dr] of [
+    [325, 260, 12], [350, 290, 8], [415, 315, 10],
+    [1190, 290, 14], [1235, 250, 9], [1310, 88, 11], [1420, 305, 13],
+  ]) {
+    g.beginPath();
+    g.arc(dx, dy, dr, 0, Math.PI * 2);
+    g.fillStyle = 'rgba(236, 254, 255, 0.72)';
+    g.fill();
+  }
+
+  // Refreshing Cold Drink Cup / Moss-Ice (Es Lumut) Illustration on Left
+  g.save();
+  const cx = 185;
+  const cy = 205;
+
+  // Frost halo glow behind cup
+  const halo = g.createRadialGradient(cx, cy, 20, cx, cy, 150);
+  halo.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
+  halo.addColorStop(1, 'rgba(103, 232, 249, 0)');
+  g.fillStyle = halo;
+  g.beginPath();
+  g.arc(cx, cy, 150, 0, Math.PI * 2);
+  g.fill();
+
+  // Striped green/white straw
+  g.save();
+  g.translate(cx + 12, cy - 110);
+  g.rotate(0.24);
+  g.fillStyle = '#ffffff';
+  g.fillRect(-9, -76, 18, 120);
+  g.fillStyle = '#059669';
+  for (let sy = -70; sy < 30; sy += 22) {
+    g.fillRect(-9, sy, 18, 10);
+  }
+  g.strokeStyle = '#064e3b';
+  g.lineWidth = 3;
+  g.strokeRect(-9, -76, 18, 120);
+  g.restore();
+
+  // Cup body (tapered clear plastic cup)
+  g.beginPath();
+  g.moveTo(cx - 72, cy - 58);
+  g.lineTo(cx + 72, cy - 58);
+  g.lineTo(cx + 52, cy + 122);
+  g.lineTo(cx - 52, cy + 122);
+  g.closePath();
+  const cupGrad = g.createLinearGradient(cx - 70, cy - 58, cx + 70, cy + 122);
+  cupGrad.addColorStop(0, '#ecfdf5');
+  cupGrad.addColorStop(0.45, '#6ee7b7');
+  cupGrad.addColorStop(1, '#047857');
+  g.fillStyle = cupGrad;
+  g.fill();
+
+  // Pandan moss-jelly ("lumut") ribbons + ice cubes inside cup
+  g.save();
+  g.clip();
+  g.fillStyle = '#065f46';
+  for (let m = 0; m < 18; m++) {
+    const mx = cx - 55 + ((m * 37) % 110);
+    const my = cy - 30 + ((m * 29) % 140);
+    g.beginPath();
+    g.ellipse(mx, my, 18, 7, (m * 0.7) % Math.PI, 0, Math.PI * 2);
+    g.fill();
+  }
+  g.fillStyle = 'rgba(255, 255, 255, 0.6)';
+  g.fillRect(cx - 60, cy - 42, 120, 26);
+  drawIceCube(cx - 22, cy - 22, 34, 0.25, 0.65);
+  drawIceCube(cx + 22, cy - 16, 32, -0.3, 0.65);
+  g.restore();
+
+  // Cup crisp dark-green outline & dome lid
+  g.strokeStyle = '#064e3b';
+  g.lineWidth = 6;
+  g.beginPath();
+  g.moveTo(cx - 72, cy - 58);
+  g.lineTo(cx + 72, cy - 58);
+  g.lineTo(cx + 52, cy + 122);
+  g.lineTo(cx - 52, cy + 122);
+  g.closePath();
+  g.stroke();
+
+  g.beginPath();
+  g.arc(cx, cy - 58, 72, Math.PI, 0);
+  g.fillStyle = 'rgba(224, 242, 254, 0.68)';
+  g.fill();
+  g.strokeStyle = '#ffffff';
+  g.lineWidth = 5;
+  g.stroke();
+  g.restore();
+
+  // Top & bottom crisp icy-white border accents
+  g.fillStyle = '#ecfeff';
+  g.fillRect(0, 0, W, 14);
+  g.fillRect(0, H - 14, W, 14);
+  g.fillStyle = '#064e3b';
+  g.fillRect(0, 14, W, 6);
+  g.fillRect(0, H - 20, W, 6);
+
+  // Hero Brand Typography: "ES LUMUT JUNI"
+  g.save();
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  const titleX = W * 0.56;
+  const titleY = H * 0.45;
+  g.font = '900 118px "Segoe UI", "Trebuchet MS", system-ui, sans-serif';
+
+  g.shadowColor = 'rgba(4, 47, 46, 0.68)';
+  g.shadowBlur = 16;
+  g.shadowOffsetX = 0;
+  g.shadowOffsetY = 8;
+
+  g.lineWidth = 18;
+  g.lineJoin = 'round';
+  g.strokeStyle = '#064e3b';
+  g.strokeText('ES LUMUT JUNI', titleX, titleY);
+
+  g.fillStyle = '#ffffff';
+  g.fillText('ES LUMUT JUNI', titleX, titleY);
+  g.restore();
+
+  // Refreshing icy-cyan sub-pill bar
+  g.save();
+  g.fillStyle = '#064e3b';
+  const pillW = 470;
+  const pillH = 50;
+  const px = W * 0.56 - pillW * 0.5;
+  const py = H * 0.72;
+  g.beginPath();
+  g.roundRect(px, py, pillW, pillH, 25);
+  g.fill();
+  g.strokeStyle = '#a5f3fc';
+  g.lineWidth = 3;
+  g.stroke();
+
+  g.font = '800 28px "Segoe UI", system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillStyle = '#67e8f9';
+  g.fillText('FRESH ICED PANDAN MOSS', W * 0.56, py + pillH * 0.52);
+  g.restore();
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 16;
   return tex;
 }
 
@@ -1958,7 +2405,39 @@ export function buildMonacoTrack(scene) {
     scene.add(box);
   }
 
-  // Start gantry bridge + 5 red lights
+  // Custom High-Resolution Sponsor Textures (anisotropy = 16)
+  const topCoolTex = makeTopCoolBannerTexture();
+  const esLumutTex = makeEsLumutJuniBannerTexture();
+
+  const gantryTrimMat = new THREE.MeshStandardMaterial({ color: 0x161a23, metalness: 0.55, roughness: 0.35 });
+  const topCoolFaceMat = new THREE.MeshStandardMaterial({
+    map: topCoolTex,
+    roughness: 0.36,
+    metalness: 0.14,
+  });
+  const topCoolGantryMats = [
+    gantryTrimMat,
+    gantryTrimMat,
+    gantryTrimMat,
+    gantryTrimMat,
+    topCoolFaceMat,
+    topCoolFaceMat,
+  ];
+  const esLumutFaceMat = new THREE.MeshStandardMaterial({
+    map: esLumutTex,
+    roughness: 0.38,
+    metalness: 0.10,
+  });
+  const esLumutBoardMats = [
+    gantryTrimMat,
+    gantryTrimMat,
+    gantryTrimMat,
+    gantryTrimMat,
+    esLumutFaceMat,
+    esLumutFaceMat,
+  ];
+
+  // Start gantry bridge + 5 red lights + TOP COOL title sponsor banner
   const gantryGroup = new THREE.Group();
   gantryGroup.position.copy(sp);
   gantryGroup.rotation.y = startYaw;
@@ -1970,11 +2449,9 @@ export function buildMonacoTrack(scene) {
   rightPylon.position.x = HALF_WIDTH + 1.6;
   const beam = new THREE.Mesh(new THREE.BoxGeometry((HALF_WIDTH + 1.8) * 2, 1.2, 1.2), pylonMat);
   beam.position.set(0, 7.2, 0);
-  const banner = new THREE.Mesh(
-    new THREE.BoxGeometry(11, 0.95, 1.28),
-    new THREE.MeshStandardMaterial({ color: 0xe10600, roughness: 0.4, metalness: 0.2 })
-  );
-  banner.position.set(0, 7.25, 0);
+  const banner = new THREE.Mesh(new THREE.BoxGeometry(15.6, 1.26, 1.32), topCoolGantryMats);
+  banner.position.set(0, 7.24, 0);
+  banner.castShadow = true;
   gantryGroup.add(leftPylon, rightPylon, beam, banner);
 
   const gantryLights = [];
@@ -1990,11 +2467,37 @@ export function buildMonacoTrack(scene) {
         roughness: 0.2,
       })
     );
-    lm.position.set((i - 2) * 1.15, 6.25, 0.55);
+    lm.position.set((i - 2) * 1.15, 6.18, 0.55);
     gantryGroup.add(lm);
     gantryLights.push(lm);
   }
   scene.add(gantryGroup);
+
+  // Secondary Overhead Track Sponsor Bridges (TOP COOL)
+  const secondaryBridgeUs = [
+    uAtPoint(TRACK_POINTS[7]),  // Beau Rivage climb into Casino Square
+    uAtPoint(TRACK_POINTS[26]), // Port Hercule harbor straight
+  ];
+  for (const bu of secondaryBridgeUs) {
+    const bIdx = Math.round(bu * SAMPLE_COUNT) % SAMPLE_COUNT;
+    const bp = pos[bIdx];
+    const bt = tan[bIdx];
+    const bridgeGroup = new THREE.Group();
+    bridgeGroup.position.copy(bp);
+    bridgeGroup.rotation.y = Math.atan2(-bt.x, -bt.z);
+
+    const bLeft = new THREE.Mesh(new THREE.BoxGeometry(0.7, 7.4, 0.9), pylonMat);
+    bLeft.position.set(-(HALF_WIDTH + 1.55), 3.7, 0);
+    const bRight = bLeft.clone();
+    bRight.position.x = HALF_WIDTH + 1.55;
+    const bBeam = new THREE.Mesh(new THREE.BoxGeometry((HALF_WIDTH + 1.75) * 2, 1.0, 1.05), pylonMat);
+    bBeam.position.set(0, 7.15, 0);
+    const bBanner = new THREE.Mesh(new THREE.BoxGeometry(15.2, 1.32, 1.24), topCoolGantryMats);
+    bBanner.position.set(0, 7.2, 0);
+    bBanner.castShadow = true;
+    bridgeGroup.add(bLeft, bRight, bBeam, bBanner);
+    scene.add(bridgeGroup);
+  }
 
   // Monaco Tunnel (arched concrete shell + warm ceiling light strips)
   const tunStartIdx = Math.floor(tunnelStart * SAMPLE_COUNT);
@@ -2915,10 +3418,24 @@ export function buildMonacoTrack(scene) {
   const gsSteelMat = new THREE.MeshStandardMaterial({ color: 0x27303d, metalness: 0.65, roughness: 0.4 });
   const gsConcreteMat = new THREE.MeshStandardMaterial({ color: 0x737982, roughness: 0.85 });
   const gsCanopyMat = new THREE.MeshStandardMaterial({ color: 0xf4f0e6, roughness: 0.5, side: THREE.DoubleSide });
-  const gsTrimMat = new THREE.MeshStandardMaterial({ color: 0xe10600, roughness: 0.45 });
+  const topCoolFasciaTex = topCoolTex.clone();
+  topCoolFasciaTex.wrapS = THREE.RepeatWrapping;
+  topCoolFasciaTex.repeat.set(3, 1);
+  topCoolFasciaTex.needsUpdate = true;
+  const esLumutFasciaTex = esLumutTex.clone();
+  esLumutFasciaTex.wrapS = THREE.RepeatWrapping;
+  esLumutFasciaTex.repeat.set(3, 1);
+  esLumutFasciaTex.needsUpdate = true;
+
+  const gsTrimMat = new THREE.MeshStandardMaterial({ color: 0x161a23, roughness: 0.45 });
+  const topCoolFasciaFace = new THREE.MeshStandardMaterial({ map: topCoolFasciaTex, roughness: 0.38, metalness: 0.12 });
+  const esLumutFasciaFace = new THREE.MeshStandardMaterial({ map: esLumutFasciaTex, roughness: 0.38, metalness: 0.1 });
+  const topCoolFasciaMats = [gsTrimMat, gsTrimMat, gsTrimMat, gsTrimMat, topCoolFasciaFace, topCoolFasciaFace];
+  const esLumutFasciaMats = [gsTrimMat, gsTrimMat, gsTrimMat, gsTrimMat, esLumutFasciaFace, esLumutFasciaFace];
   const crowdCoords = [];
 
-  for (const spot of grandstandSpots) {
+  for (let gsIdx = 0; gsIdx < grandstandSpots.length; gsIdx++) {
+    const spot = grandstandSpots[gsIdx];
     const idx = Math.round(spot.u * SAMPLE_COUNT) % SAMPLE_COUNT;
     const p = pos[idx];
     const r = right[idx];
@@ -2962,7 +3479,7 @@ export function buildMonacoTrack(scene) {
       }
     }
 
-    // Rear support pillars & overhead white canopy + red fascia banner
+    // Rear support pillars & overhead white canopy + sponsor fascia banner
     for (let px = -11; px <= 11; px += 11) {
       const post = new THREE.Mesh(new THREE.BoxGeometry(0.45, 9.2, 0.55), gsSteelMat);
       post.position.set(px, 4.6, -7.2);
@@ -2972,7 +3489,10 @@ export function buildMonacoTrack(scene) {
     canopy.position.set(0, 8.8, -3.2);
     canopy.rotation.x = 0.12;
     canopy.castShadow = true;
-    const fascia = new THREE.Mesh(new THREE.BoxGeometry(27, 0.7, 0.35), gsTrimMat);
+    const fascia = new THREE.Mesh(
+      new THREE.BoxGeometry(27, 1.05, 0.36),
+      gsIdx % 2 === 1 ? esLumutFasciaMats : topCoolFasciaMats
+    );
     fascia.position.set(0, 8.2, 1.3);
     gsGroup.add(canopy, fascia);
     scene.add(gsGroup);
@@ -3074,10 +3594,10 @@ export function buildMonacoTrack(scene) {
     }
   }
 
-  // --- Armco Barrier Sponsor Boards (4 Crisp High-Res Circuit Sponsors via InstancedMesh) ---
+  // --- Armco Barrier & Corner Run-Off Sponsor Boards (ES LUMUT JUNI + TOP COOL + Circuit Sponsors) ---
   const bannerBuckets = [[], [], [], []];
-  for (let i = 0; i < 64; i++) {
-    const idx = Math.floor((i / 64) * SAMPLE_COUNT);
+  for (let i = 0; i < 68; i++) {
+    const idx = Math.floor((i / 68) * SAMPLE_COUNT);
     const u = idx / SAMPLE_COUNT;
     if (u >= tunnelStart && u <= tunnelEnd) continue;
     const p = pos[idx];
@@ -3085,24 +3605,61 @@ export function buildMonacoTrack(scene) {
     const side = i % 2 === 0 ? 1 : -1;
     const bx = p.x + r.x * side * (HALF_WIDTH + 1.16);
     const bz = p.z + r.z * side * (HALF_WIDTH + 1.16);
-    bannerBuckets[i % 4].push({
+    // Prioritize ES LUMUT JUNI (buckets 0 & 2 -> ~50% + harbor/braking zones) and TOP COOL (bucket 1)
+    const bucketIdx = i % 4 === 0 ? 0 : i % 4 === 1 ? 1 : i % 4 === 2 ? 0 : 3;
+    bannerBuckets[bucketIdx].push({
       x: bx,
       y: p.y + 1.48,
       z: bz,
       yaw: Math.atan2(-side * r.x, -side * r.z),
     });
   }
+  // Extra dedicated ES LUMUT JUNI & TOP COOL billboards along braking zones, chicanes & harbor straight
+  const highlightBoardSpots = [
+    { u: (uAtPoint(TRACK_POINTS[4]) - 0.009 + 1) % 1, side: -1, bucket: 0 }, // Sainte-Devote braking run-off
+    { u: uAtPoint(TRACK_POINTS[4]), side: -1, bucket: 0 },                    // Sainte-Devote apex wall
+    { u: uAtPoint(TRACK_POINTS[9]), side: -1, bucket: 1 },                    // Casino Square run-off
+    { u: uAtPoint(TRACK_POINTS[12]), side: -1, bucket: 0 },                   // Mirabeau braking run-off
+    { u: uAtPoint(TRACK_POINTS[15]), side: -1, bucket: 0 },                   // Fairmont Hairpin outer wall
+    { u: uAtPoint(TRACK_POINTS[22]), side: 1, bucket: 0 },                    // Harbor straight exit tunnel
+    { u: uAtPoint(TRACK_POINTS[23]), side: -1, bucket: 0 },                   // Nouvelle Chicane braking run-off
+    { u: uAtPoint(TRACK_POINTS[24]), side: 1, bucket: 1 },                    // Nouvelle Chicane harbor barrier
+    { u: uAtPoint(TRACK_POINTS[27]), side: -1, bucket: 0 },                   // Piscine chicane run-off
+    { u: uAtPoint(TRACK_POINTS[31]), side: -1, bucket: 0 },                   // La Rascasse corner run-off
+    { u: uAtPoint(TRACK_POINTS[33]), side: -1, bucket: 1 },                   // Anthony Noghes wall
+  ];
+  for (const hb of highlightBoardSpots) {
+    const idx = Math.round(hb.u * SAMPLE_COUNT) % SAMPLE_COUNT;
+    const p = pos[idx];
+    const r = right[idx];
+    const t = tan[idx];
+    const bx = p.x + r.x * hb.side * (HALF_WIDTH + 1.38);
+    const bz = p.z + r.z * hb.side * (HALF_WIDTH + 1.38);
+    // Angle slightly toward oncoming drivers (-t) for maximum legibility
+    const wallYaw = Math.atan2(-hb.side * r.x, -hb.side * r.z);
+    const driverYaw = Math.atan2(-t.x, -t.z);
+    const blendYaw = Math.atan2(
+      Math.sin(wallYaw) * 0.72 + Math.sin(driverYaw) * 0.28,
+      Math.cos(wallYaw) * 0.72 + Math.cos(driverYaw) * 0.28
+    );
+    bannerBuckets[hb.bucket].push({
+      x: bx,
+      y: p.y + 2.20,
+      z: bz,
+      yaw: blendYaw,
+      elevated: true,
+    });
+  }
 
-  const spawnBanners = (specs, tex) => {
+  const spawnBanners = (specs, mats) => {
     if (!specs.length) return;
-    const bGeo = new THREE.BoxGeometry(6.8, 0.95, 0.12);
-    const bMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.44, metalness: 0.12 });
-    const im = new THREE.InstancedMesh(bGeo, bMat, specs.length);
+    const bGeo = new THREE.BoxGeometry(6.8, 1.35, 0.14);
+    const im = new THREE.InstancedMesh(bGeo, mats, specs.length);
     im.castShadow = true;
     specs.forEach((b, i) => {
       dummy.position.set(b.x, b.y, b.z);
       dummy.rotation.set(0, b.yaw, 0);
-      dummy.scale.set(1, 1, 1);
+      dummy.scale.set(1, b.elevated ? 1.15 : 0.88, 1);
       dummy.updateMatrix();
       im.setMatrixAt(i, dummy.matrix);
     });
@@ -3110,10 +3667,21 @@ export function buildMonacoTrack(scene) {
     im.computeBoundingSphere();
     scene.add(im);
   };
-  spawnBanners(bannerBuckets[0], makeSponsorBannerTexture('#121722', '#e10600', 'MONACO GP', 'MONTE-CARLO STREET CIRCUIT'));
-  spawnBanners(bannerBuckets[1], makeSponsorBannerTexture('#0b2228', '#d8b24a', 'PORT HERCULE', 'PRINCIPAUTÉ DE MONACO'));
-  spawnBanners(bannerBuckets[2], makeSponsorBannerTexture('#10233f', '#00d2be', 'MONTE-CARLO', 'FIA GRADE 1 STREET CIRCUIT'));
-  spawnBanners(bannerBuckets[3], makeSponsorBannerTexture('#1d1118', '#f2efe6', 'GRAND PRIX', 'AUTOMOBILE CLUB DE MONACO'));
+  const monacoGpFace = new THREE.MeshStandardMaterial({
+    map: makeSponsorBannerTexture('#121722', '#e10600', 'MONACO GP', 'MONTE-CARLO STREET CIRCUIT'),
+    roughness: 0.42,
+    metalness: 0.12,
+  });
+  const portHerculeFace = new THREE.MeshStandardMaterial({
+    map: makeSponsorBannerTexture('#0b2228', '#d8b24a', 'PORT HERCULE', 'PRINCIPAUTÉ DE MONACO'),
+    roughness: 0.42,
+    metalness: 0.12,
+  });
+
+  spawnBanners(bannerBuckets[0], esLumutBoardMats);
+  spawnBanners(bannerBuckets[1], topCoolGantryMats);
+  spawnBanners(bannerBuckets[2], [gantryTrimMat, gantryTrimMat, gantryTrimMat, gantryTrimMat, portHerculeFace, portHerculeFace]);
+  spawnBanners(bannerBuckets[3], [gantryTrimMat, gantryTrimMat, gantryTrimMat, gantryTrimMat, monacoGpFace, monacoGpFace]);
 
   // --- Port Hercule Moored Superyachts (Strictly inside deep harbor water) ---
   const yachtHullGeo = makeYachtHullGeometry();

@@ -22,7 +22,17 @@ import {
   resetCarHealth,
 } from './carPhysics.js';
 import { initAIRacers, updateAIRacers, placeCarOnGrid, restartRace } from './aiRacer.js';
-import { initAudio, updateAudio, updateHUD, notifyRepairPickup } from './audioHud.js';
+import {
+  initAudio,
+  updateAudio,
+  updateHUD,
+  notifyRepairPickup,
+  playWhooshSound,
+  playCollisionSound,
+  playGameOverSound,
+  playFinishSound,
+  stopVictoryMusic,
+} from './audioHud.js';
 
 const STEP = 1 / 120;
 const MAX_SUBSTEPS = 6;
@@ -744,11 +754,30 @@ export function startMonacoEngine(
   let raceState: any = null;
   let disposed = false;
   let frameId = 0;
+  let prevHealth = 100;
+  let prevFinished = false;
+  let wallHitAudioCooldown = 0;
+  let aiHitAudioCooldown = 0;
+  const whooshTrackers = aiList.map(() => ({
+    prevAlong: 0,
+    initialized: false,
+    cooldown: 0,
+  }));
 
   function fullRestartRace() {
+    stopVictoryMusic();
     restartRace(allCars, trackData);
     resetCarHealth(playerCar);
     resetParticles();
+    prevHealth = 100;
+    prevFinished = false;
+    wallHitAudioCooldown = 0;
+    aiHitAudioCooldown = 0;
+    for (const wt of whooshTrackers) {
+      wt.prevAlong = 0;
+      wt.initialized = false;
+      wt.cooldown = 0;
+    }
     if (Array.isArray(trackData.repairTokens)) {
       for (const tok of trackData.repairTokens) {
         tok.active = true;
@@ -805,10 +834,21 @@ export function startMonacoEngine(
     accumulator += dt;
     let steps = 0;
     while (accumulator >= STEP && steps < MAX_SUBSTEPS) {
+      wallHitAudioCooldown = Math.max(0, wallHitAudioCooldown - STEP);
+      aiHitAudioCooldown = Math.max(0, aiHitAudioCooldown - STEP);
+
+      const hitBeforeWall = playerP.hit;
+      const speedBeforeWall = playerP.speed;
       carState = updateCarPhysics(playerCar, playerControls, trackData, STEP);
+      if (playerP.hit > hitBeforeWall + 0.04 && wallHitAudioCooldown <= 0) {
+        const wallIntensity = Math.min(1, Math.max(0.2, Math.max(playerP.hit, speedBeforeWall / 75)));
+        playCollisionSound(wallIntensity, true);
+        wallHitAudioCooldown = 0.24;
+      }
+
       raceState = updateAIRacers(aiList, allCars, trackData, STEP);
 
-      // Car-to-AI collision detection & proportional damage
+      // Car-to-AI collision detection, dynamic impact audio & proportional damage
       if (raceState?.phase === 'RACING' && playerP.health > 0) {
         const pfX = -Math.sin(playerP.yaw);
         const pfZ = -Math.cos(playerP.yaw);
@@ -828,7 +868,13 @@ export function startMonacoEngine(
             const relVx = pfX * playerP.speed - afX * aiP.speed;
             const relVz = pfZ * playerP.speed - afZ * aiP.speed;
             const relSpeed = Math.hypot(relVx, relVz);
-            const impactSpeed = Math.max(relSpeed, Math.abs(playerP.speed - aiP.speed) + 6);
+            const speedDiff = Math.abs(playerP.speed - aiP.speed);
+            if (aiHitAudioCooldown <= 0 && (relSpeed > 2.8 || speedDiff > 2.8)) {
+              const carIntensity = Math.min(1, Math.max(0.22, Math.max(relSpeed, speedDiff) / 42));
+              playCollisionSound(carIntensity, false);
+              aiHitAudioCooldown = 0.28;
+            }
+            const impactSpeed = Math.max(relSpeed, speedDiff + 6);
             if (impactSpeed > 15 && playerP.damageCooldown <= 0) {
               applyCarDamage(playerCar, impactSpeed);
               playerP.speed *= 0.86;
@@ -842,6 +888,47 @@ export function startMonacoEngine(
       steps++;
     }
     if (steps === MAX_SUBSTEPS) accumulator = 0;
+
+    // Opponent proximity & overtake Doppler whoosh detection
+    if (raceState?.phase === 'RACING' && playerP.health > 0) {
+      const pfX = -Math.sin(playerP.yaw);
+      const pfZ = -Math.cos(playerP.yaw);
+      const prX = Math.cos(playerP.yaw);
+      const prZ = -Math.sin(playerP.yaw);
+      for (let i = 0; i < aiList.length; i++) {
+        const ai = aiList[i];
+        const wt = whooshTrackers[i];
+        wt.cooldown = Math.max(0, wt.cooldown - dt);
+        const dx = ai.position.x - playerCar.position.x;
+        const dz = ai.position.z - playerCar.position.z;
+        const along = dx * pfX + dz * pfZ;
+        const across = dx * prX + dz * prZ;
+        if (!wt.initialized) {
+          wt.prevAlong = along;
+          wt.initialized = true;
+          continue;
+        }
+        const dy = Math.abs(ai.position.y - playerCar.position.y);
+        const dist = Math.hypot(dx, dz);
+        if (dy < 3.0 && dist < 8.4 && wt.cooldown <= 0) {
+          const crossedPlane = wt.prevAlong * along <= 0;
+          if (crossedPlane || Math.abs(along) < 2.2) {
+            const aiP = ai.userData.physics;
+            const afX = -Math.sin(aiP.yaw);
+            const afZ = -Math.cos(aiP.yaw);
+            const relVx = aiP.speed * afX - playerP.speed * pfX;
+            const relVz = aiP.speed * afZ - playerP.speed * pfZ;
+            const relSpeed = Math.hypot(relVx, relVz);
+            if (relSpeed > 4.2) {
+              const pan = Math.max(-0.95, Math.min(0.95, across / 4.2));
+              playWhooshSound(relSpeed, pan);
+              wt.cooldown = 1.9;
+            }
+          }
+        }
+        wt.prevAlong = along;
+      }
+    }
 
     // Update & check trackside Repair Coins (12s respawn cooldown)
     if (Array.isArray(trackData.repairTokens)) {
@@ -931,6 +1018,18 @@ export function startMonacoEngine(
       brake: carState.brake ?? playerControls.brake,
     };
     updateAudio(audioCarState);
+
+    if (prevHealth > 0 && playerP.health <= 0 && !prevFinished) {
+      playGameOverSound();
+    }
+    prevHealth = playerP.health;
+
+    const isFinishedNow = !!(raceState && raceState.isFinished);
+    if (!prevFinished && isFinishedNow && playerP.health > 0) {
+      playFinishSound(raceState.playerPosition || 1);
+    }
+    prevFinished = isFinishedNow;
+
     updateHUD(raceState);
 
     if (isSoftwareGl || !composer) {
@@ -946,6 +1045,7 @@ export function startMonacoEngine(
 
   return function cleanup() {
     disposed = true;
+    stopVictoryMusic();
     cancelAnimationFrame(frameId);
     clearTimeout(frameId);
     window.removeEventListener('keydown', onKeyDown);

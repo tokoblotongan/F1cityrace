@@ -209,15 +209,32 @@ function mmDraw(raceState, now) {
 // ═══════════════════════════════════════════════════════════════════════════
 // 2 · WEB AUDIO — V6 turbo-hybrid engine, screech, impacts, UI tones
 // ═══════════════════════════════════════════════════════════════════════════
-let ctx = null, master = null, noiseBuf = null, audioReady = false, muted = false;
+let ctx = null, master = null, noiseBuf = null, pinkNoiseBuf = null, audioReady = false, muted = false;
 let engine = null, screech = null, curb = null, shiftCutUntil = 0;
 let latestCarState = null;
-let prevGear = 1, prevHit = 0, prevDrs = false;
+let prevGear = 1, prevDrs = false;
 
 function makeNoise() {
   const len = ctx.sampleRate * 2, buf = ctx.createBuffer(1, len, ctx.sampleRate);
   const d = buf.getChannelData(0);
   for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  return buf;
+}
+function makePinkNoise() {
+  const len = ctx.sampleRate * 2, buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+  for (let i = 0; i < len; i++) {
+    const white = Math.random() * 2 - 1;
+    b0 = 0.99886 * b0 + white * 0.0555179;
+    b1 = 0.99332 * b1 + white * 0.0750759;
+    b2 = 0.96900 * b2 + white * 0.1538520;
+    b3 = 0.86650 * b3 + white * 0.3104856;
+    b4 = 0.55000 * b4 + white * 0.5329522;
+    b5 = -0.7616 * b5 - white * 0.0168980;
+    d[i] = clamp((b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11, -1, 1);
+    b6 = white * 0.115926;
+  }
   return buf;
 }
 function buildEngine() {
@@ -259,52 +276,161 @@ export function initAudio() {
     comp.threshold.value = -14; comp.knee.value = 20; comp.ratio.value = 8; comp.attack.value = 0.004; comp.release.value = 0.18;
     master.connect(comp); comp.connect(ctx.destination);
     noiseBuf = makeNoise();
+    pinkNoiseBuf = makePinkNoise();
     buildEngine(); buildLoops();
     audioReady = true;
     if (ctx.state === 'suspended') ctx.resume().catch(() => {});
     return true;
   } catch { ctx = null; audioReady = false; return false; }
 }
-function burst({ type = 'lowpass', freq = 300, q = 0.8, gain = 0.3, dur = 0.25, sweepTo = null }) {
-  if (!audioReady || !ctx) return;
-  const t = ctx.currentTime;
-  const src = ctx.createBufferSource(); src.buffer = noiseBuf;
-  const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q;
-  if (sweepTo) f.frequency.exponentialRampToValueAtTime(sweepTo, t + dur);
+function burst({ type = 'lowpass', freq = 300, q = 0.8, gain = 0.3, dur = 0.25, sweepTo = null, delay = 0, usePink = false, dest = null }) {
+  if (!audioReady || !ctx || ctx.state !== 'running') return;
+  const t = ctx.currentTime + delay;
+  const src = ctx.createBufferSource(); src.buffer = usePink && pinkNoiseBuf ? pinkNoiseBuf : noiseBuf;
+  const f = ctx.createBiquadFilter(); f.type = type; f.frequency.setValueAtTime(freq, t); f.Q.value = q;
+  if (sweepTo) f.frequency.exponentialRampToValueAtTime(Math.max(20, sweepTo), t + dur);
   const g = ctx.createGain();
-  g.gain.setValueAtTime(gain, t);
-  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-  src.connect(f); f.connect(g); g.connect(master);
-  src.start(t); src.stop(t + dur + 0.02);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+  src.connect(f); f.connect(g); g.connect(dest || master);
+  src.start(t); src.stop(t + dur + 0.03);
 }
-function tone(freq, dur = 0.15, gain = 0.12, delay = 0, type = 'sine') {
-  if (!audioReady || !ctx) return;
+function tone(freq, dur = 0.15, gain = 0.12, delay = 0, type = 'sine', dest = null) {
+  if (!audioReady || !ctx || ctx.state !== 'running') return;
   const t = ctx.currentTime + delay;
   const o = ctx.createOscillator(); o.type = type; o.frequency.value = freq;
   const g = ctx.createGain();
   g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(gain, t + 0.015);
-  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-  o.connect(g); g.connect(master);
-  o.start(t); o.stop(t + dur + 0.02);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+  o.connect(g); g.connect(dest || master);
+  o.start(t); o.stop(t + dur + 0.03);
 }
-function thud(hit) {
-  burst({ freq: 220, gain: 0.45 * hit, dur: 0.3 });
-  // Metallic chassis crunch & scrape overtone
-  burst({ type: 'bandpass', freq: 1450, q: 1.8, gain: 0.28 * hit, dur: 0.22, sweepTo: 520 });
-  if (!audioReady || !ctx) return;
-  const t = ctx.currentTime;
-  const o = ctx.createOscillator(); o.type = 'sine';
-  o.frequency.setValueAtTime(135, t); o.frequency.exponentialRampToValueAtTime(36, t + 0.24);
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.42 * hit, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
-  o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.3);
 
-  const m = ctx.createOscillator(); m.type = 'sawtooth';
-  m.frequency.setValueAtTime(420, t); m.frequency.exponentialRampToValueAtTime(110, t + 0.14);
-  const mg = ctx.createGain();
-  mg.gain.setValueAtTime(0.14 * hit, t); mg.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-  m.connect(mg); mg.connect(master); m.start(t); m.stop(t + 0.16);
+// 1 · Opponent Proximity & Overtake Doppler Whoosh
+export function playWhooshSound(relativeSpeed = 20, pan = 0) {
+  if (!audioReady || !ctx || ctx.state !== 'running' || muted) return;
+  const t = ctx.currentTime;
+  const spd = clamp(Math.abs(relativeSpeed) / 42, 0.25, 1.25);
+  const dur = clamp(0.54 - spd * 0.16, 0.28, 0.56);
+
+  const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+  const p = clamp(pan, -0.95, 0.95);
+  const side = Math.abs(p) > 0.08 ? Math.sign(p) : 1;
+  const pStart = clamp(side * Math.max(0.45, Math.abs(p)), -0.95, 0.95);
+  const pEnd = clamp(-pStart * 0.45, -0.65, 0.65);
+  if (panner) {
+    panner.pan.setValueAtTime(pStart, t);
+    panner.pan.linearRampToValueAtTime(pEnd, t + dur);
+    panner.connect(master);
+  }
+  const dest = panner || master;
+
+  // Bandpass-filtered white/pink aerodynamic noise sweeping high -> low
+  const airSrcW = ctx.createBufferSource(); airSrcW.buffer = noiseBuf;
+  const airSrcP = ctx.createBufferSource(); airSrcP.buffer = pinkNoiseBuf || noiseBuf;
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.Q.value = 1.65;
+  bp.frequency.setValueAtTime(2400 + spd * 1500, t);
+  bp.frequency.exponentialRampToValueAtTime(240 + spd * 110, t + dur);
+
+  const airGain = ctx.createGain();
+  airGain.gain.setValueAtTime(0.0001, t);
+  airGain.gain.linearRampToValueAtTime(0.24 * spd, t + dur * 0.30);
+  airGain.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+
+  const wMix = ctx.createGain(); wMix.gain.value = 0.52;
+  const pMix = ctx.createGain(); pMix.gain.value = 0.68;
+  airSrcW.connect(wMix); wMix.connect(bp);
+  airSrcP.connect(pMix); pMix.connect(bp);
+  bp.connect(airGain); airGain.connect(dest);
+  airSrcW.start(t); airSrcW.stop(t + dur + 0.03);
+  airSrcP.start(t); airSrcP.stop(t + dur + 0.03);
+
+  // Brief Doppler pitch-dropping engine hum
+  const engOsc = ctx.createOscillator();
+  engOsc.type = 'sawtooth';
+  engOsc.frequency.setValueAtTime(275 + spd * 155, t);
+  engOsc.frequency.exponentialRampToValueAtTime(115 + spd * 40, t + dur);
+
+  const engSub = ctx.createOscillator();
+  engSub.type = 'triangle';
+  engSub.frequency.setValueAtTime(138 + spd * 78, t);
+  engSub.frequency.exponentialRampToValueAtTime(58 + spd * 20, t + dur);
+
+  const engLp = ctx.createBiquadFilter();
+  engLp.type = 'lowpass';
+  engLp.frequency.setValueAtTime(980, t);
+  engLp.frequency.exponentialRampToValueAtTime(280, t + dur);
+
+  const engGain = ctx.createGain();
+  engGain.gain.setValueAtTime(0.0001, t);
+  engGain.gain.linearRampToValueAtTime(0.11 * spd, t + dur * 0.28);
+  engGain.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+
+  engOsc.connect(engLp);
+  engSub.connect(engLp);
+  engLp.connect(engGain);
+  engGain.connect(dest);
+  engOsc.start(t); engOsc.stop(t + dur + 0.03);
+  engSub.start(t); engSub.stop(t + dur + 0.03);
+}
+
+// 2 · Dynamic Collision Impact Sound (Barrier/Armco vs Car-to-Car)
+export function playCollisionSound(impactIntensity = 0.5, isBarrier = true) {
+  if (!audioReady || !ctx || ctx.state !== 'running' || muted) return;
+  const t = ctx.currentTime;
+  const hit = clamp(impactIntensity, 0.16, 1.0);
+
+  if (isBarrier) {
+    // Low-end Armco thud
+    burst({ type: 'lowpass', freq: 230, q: 0.9, gain: 0.44 * hit, dur: 0.27, usePink: true });
+    const sub = ctx.createOscillator(); sub.type = 'sine';
+    sub.frequency.setValueAtTime(138, t);
+    sub.frequency.exponentialRampToValueAtTime(34, t + 0.24);
+    const subG = ctx.createGain();
+    subG.gain.setValueAtTime(0.45 * hit, t);
+    subG.gain.exponentialRampToValueAtTime(0.0008, t + 0.27);
+    sub.connect(subG); subG.connect(master);
+    sub.start(t); sub.stop(t + 0.29);
+
+    // Crisp metallic Armco clank (inharmonic ring partials)
+    const clank1 = ctx.createOscillator(); clank1.type = 'triangle';
+    clank1.frequency.setValueAtTime(790, t);
+    clank1.frequency.exponentialRampToValueAtTime(510, t + 0.16);
+    const clank2 = ctx.createOscillator(); clank2.type = 'square';
+    clank2.frequency.setValueAtTime(1240, t);
+    clank2.frequency.exponentialRampToValueAtTime(840, t + 0.14);
+    const clankBp = ctx.createBiquadFilter();
+    clankBp.type = 'bandpass'; clankBp.frequency.value = 1050; clankBp.Q.value = 2.2;
+    const clankG = ctx.createGain();
+    clankG.gain.setValueAtTime(0.18 * hit, t);
+    clankG.gain.exponentialRampToValueAtTime(0.0008, t + 0.19);
+    clank1.connect(clankBp); clank2.connect(clankBp);
+    clankBp.connect(clankG); clankG.connect(master);
+    clank1.start(t); clank1.stop(t + 0.21);
+    clank2.start(t); clank2.stop(t + 0.21);
+
+    // Brief metallic scraping noise burst
+    burst({ type: 'bandpass', freq: 1850, q: 2.0, gain: 0.24 * hit, dur: 0.23, sweepTo: 620 });
+  } else {
+    // Car-to-car contact: hollow carbon-fiber thump + crisp crunch
+    burst({ type: 'lowpass', freq: 340, q: 1.1, gain: 0.34 * hit, dur: 0.19, usePink: true });
+    const thump = ctx.createOscillator(); thump.type = 'triangle';
+    thump.frequency.setValueAtTime(165, t);
+    thump.frequency.exponentialRampToValueAtTime(46, t + 0.18);
+    const thumpG = ctx.createGain();
+    thumpG.gain.setValueAtTime(0.38 * hit, t);
+    thumpG.gain.exponentialRampToValueAtTime(0.0008, t + 0.20);
+    thump.connect(thumpG); thumpG.connect(master);
+    thump.start(t); thump.stop(t + 0.22);
+
+    // Carbon-fiber transient crunch + secondary composite crackle
+    burst({ type: 'bandpass', freq: 2350, q: 1.3, gain: 0.32 * hit, dur: 0.13, sweepTo: 920 });
+    burst({ type: 'bandpass', freq: 2900, q: 1.6, gain: 0.20 * hit, dur: 0.08, sweepTo: 1200, delay: 0.028 });
+  }
 }
 
 export function playRepairSound() {
@@ -315,18 +441,295 @@ export function playRepairSound() {
   burst({ type: 'highpass', freq: 2400, q: 2.0, gain: 0.07, dur: 0.06 });
 }
 
-export function playDnfSound() {
+// 3 · Game Over / DNF Audio (immediate engine cut, power-down spin-down + 3-note brass defeat chord)
+const victoryLoop = {
+  active: false,
+  timer: 0,
+  startTimeout: 0,
+  step: 0,
+  nextTime: 0,
+  gainNode: null,
+  nodes: new Set(),
+};
+
+export function stopVictoryMusic() {
+  if (victoryLoop.startTimeout) {
+    clearTimeout(victoryLoop.startTimeout);
+    victoryLoop.startTimeout = 0;
+  }
+  if (victoryLoop.timer) {
+    clearInterval(victoryLoop.timer);
+    victoryLoop.timer = 0;
+  }
+  victoryLoop.active = false;
+  if (ctx && victoryLoop.gainNode) {
+    const t = ctx.currentTime;
+    try {
+      victoryLoop.gainNode.gain.cancelScheduledValues(t);
+      victoryLoop.gainNode.gain.setTargetAtTime(0.0001, t, 0.025);
+    } catch {}
+  }
+  for (const n of victoryLoop.nodes) {
+    try { n.stop(ctx ? ctx.currentTime + 0.08 : 0); } catch {}
+  }
+  victoryLoop.nodes.clear();
+  victoryLoop.gainNode = null;
+}
+
+export function playGameOverSound() {
+  dnfSoundDone = true;
+  stopVictoryMusic();
   if (!audioReady || !ctx) return;
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
   const t = ctx.currentTime;
-  const o = ctx.createOscillator(); o.type = 'sawtooth';
-  o.frequency.setValueAtTime(240, t);
-  o.frequency.exponentialRampToValueAtTime(48, t + 0.7);
+
+  // Immediately silence active engine revving, turbo, tire screech, and curb rumble
+  if (engine) {
+    engine.gain.gain.cancelScheduledValues(t);
+    engine.gain.gain.setTargetAtTime(0, t, 0.015);
+    engine.tg.gain.cancelScheduledValues(t);
+    engine.tg.gain.setTargetAtTime(0, t, 0.015);
+  }
+  if (screech) screech.g.gain.setTargetAtTime(0, t, 0.02);
+  if (curb) curb.g.gain.setTargetAtTime(0, t, 0.02);
+
+  // Dramatic engine power-down spin-down
+  const spinFilter = ctx.createBiquadFilter();
+  spinFilter.type = 'lowpass';
+  spinFilter.frequency.setValueAtTime(1400, t);
+  spinFilter.frequency.exponentialRampToValueAtTime(130, t + 0.92);
+
+  const spinGain = ctx.createGain();
+  spinGain.gain.setValueAtTime(0.24, t);
+  spinGain.gain.exponentialRampToValueAtTime(0.0008, t + 0.95);
+  spinFilter.connect(spinGain);
+  spinGain.connect(master);
+
+  const spin1 = ctx.createOscillator(); spin1.type = 'sawtooth';
+  spin1.frequency.setValueAtTime(260, t);
+  spin1.frequency.exponentialRampToValueAtTime(34, t + 0.92);
+  const spin2 = ctx.createOscillator(); spin2.type = 'sine';
+  spin2.frequency.setValueAtTime(130, t);
+  spin2.frequency.exponentialRampToValueAtTime(24, t + 0.92);
+  spin1.connect(spinFilter);
+  spin2.connect(spinFilter);
+  spin1.start(t); spin1.stop(t + 0.96);
+  spin2.start(t); spin2.stop(t + 0.96);
+
+  // Turbo whine power-down
+  const turboDown = ctx.createOscillator(); turboDown.type = 'sine';
+  turboDown.frequency.setValueAtTime(1750, t);
+  turboDown.frequency.exponentialRampToValueAtTime(210, t + 0.65);
+  const turboG = ctx.createGain();
+  turboG.gain.setValueAtTime(0.055, t);
+  turboG.gain.exponentialRampToValueAtTime(0.0008, t + 0.66);
+  turboDown.connect(turboG); turboG.connect(master);
+  turboDown.start(t); turboDown.stop(t + 0.68);
+
+  // Somber descending 3-note brass/synth defeat chord progression (D4 -> C4 -> G3 minor cadence)
+  const defeatNotes = [
+    { lead: 293.66, bass: 146.83, harm: 220.00, delay: 0.38, dur: 0.48 },
+    { lead: 261.63, bass: 130.81, harm: 196.00, delay: 0.78, dur: 0.50 },
+    { lead: 196.00, bass: 98.00,  harm: 233.08, delay: 1.18, dur: 0.95 },
+  ];
+  for (const n of defeatNotes) {
+    const nt = t + n.delay;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(1150, nt);
+    lp.frequency.exponentialRampToValueAtTime(380, nt + n.dur);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, nt);
+    g.gain.linearRampToValueAtTime(0.14, nt + 0.04);
+    g.gain.exponentialRampToValueAtTime(0.0008, nt + n.dur);
+    lp.connect(g); g.connect(master);
+
+    for (const [freq, type, det] of [
+      [n.lead, 'sawtooth', -5],
+      [n.lead, 'sawtooth', 5],
+      [n.harm, 'triangle', 0],
+      [n.bass, 'triangle', 0],
+    ]) {
+      const o = ctx.createOscillator();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, nt);
+      if (det) o.detune.value = det;
+      o.connect(lp);
+      o.start(nt);
+      o.stop(nt + n.dur + 0.04);
+    }
+  }
+}
+
+export function playDnfSound() {
+  playGameOverSound();
+}
+
+// 4 & 5 · Race Finish Fanfare + Podium Victory Synth-Orchestral Melody (1st-3rd) / Completion Jingle (4th-8th)
+function scheduleVictoryVoice(freq, startTime, dur, type, gainVal, cutoffStart, cutoffEnd, bus) {
+  if (!ctx || !bus) return;
+  const o = ctx.createOscillator();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, startTime);
+
+  const f = ctx.createBiquadFilter();
+  f.type = 'lowpass';
+  f.frequency.setValueAtTime(cutoffStart, startTime);
+  f.frequency.exponentialRampToValueAtTime(Math.max(120, cutoffEnd), startTime + dur);
+
   const g = ctx.createGain();
-  g.gain.setValueAtTime(0.22, t);
-  g.gain.exponentialRampToValueAtTime(0.001, t + 0.72);
-  o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.75);
-  tone(220, 0.45, 0.14, 0.05, 'triangle');
-  tone(164.8, 0.55, 0.14, 0.22, 'triangle');
+  g.gain.setValueAtTime(0.0001, startTime);
+  g.gain.linearRampToValueAtTime(gainVal, startTime + 0.016);
+  g.gain.exponentialRampToValueAtTime(0.0008, startTime + dur);
+
+  o.connect(f);
+  f.connect(g);
+  g.connect(bus);
+  victoryLoop.nodes.add(o);
+  o.onended = () => victoryLoop.nodes.delete(o);
+  o.start(startTime);
+  o.stop(startTime + dur + 0.03);
+}
+
+function startPodiumVictoryMusic() {
+  stopVictoryMusic();
+  if (!audioReady || !ctx) return;
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+
+  const bus = ctx.createGain();
+  bus.gain.setValueAtTime(0.85, ctx.currentTime);
+  bus.connect(master);
+  victoryLoop.gainNode = bus;
+  victoryLoop.active = true;
+  victoryLoop.step = 0;
+
+  // 132 BPM -> eighth-note duration = 0.22727s, 32-step celebratory 8-bar loop (C -> Am -> F -> G)
+  const STEP_SEC = 60 / 132 / 2;
+  const CHORDS = [
+    [261.63, 329.63, 392.00, 523.25], // C major
+    [220.00, 261.63, 329.63, 440.00], // A minor
+    [174.61, 220.00, 261.63, 349.23], // F major
+    [196.00, 246.94, 293.66, 392.00], // G major
+  ];
+  const BASS = [130.81, 110.00, 87.31, 98.00];
+  // Triumphant brassy synth lead melody (null = sustain/rest)
+  const LEAD = [
+    783.99, null, 659.25, 783.99, null, null, 1046.50, null,
+    880.00, null, null, 783.99, 659.25, null, null, null,
+    698.46, null, 880.00, 1046.50, null, null, 880.00, null,
+    783.99, null, 987.77, 1174.66, null, null, 987.77, 783.99,
+  ];
+  const LEAD_DUR = [
+    1.7, 0, 0.9, 2.4, 0, 0, 1.7, 0,
+    2.4, 0, 0, 0.9, 3.0, 0, 0, 0,
+    1.7, 0, 0.9, 2.4, 0, 0, 1.7, 0,
+    1.7, 0, 0.9, 2.5, 0, 0, 0.9, 0.9,
+  ];
+
+  const scheduleStep = (stepIdx, when) => {
+    if (!victoryLoop.active || !ctx) return;
+    const barPair = (stepIdx >> 3) % 4;
+    const chord = CHORDS[barPair];
+    const bassFreq = BASS[barPair];
+
+    // Sparkling major-key arpeggio
+    const arpFreq = chord[stepIdx % 4] * 2;
+    scheduleVictoryVoice(arpFreq, when, STEP_SEC * 0.85, 'triangle', 0.055, 3600, 1400, bus);
+
+    // Rhythmic octave bassline
+    const bFreq = stepIdx % 2 === 0 ? bassFreq : bassFreq * 2;
+    scheduleVictoryVoice(bFreq, when, STEP_SEC * 0.88, stepIdx % 2 === 0 ? 'triangle' : 'sawtooth', stepIdx % 2 === 0 ? 0.13 : 0.06, 620, 210, bus);
+
+    // Brassy synth-orchestral lead + harmonic third
+    const leadFreq = LEAD[stepIdx];
+    if (leadFreq) {
+      const dur = STEP_SEC * LEAD_DUR[stepIdx];
+      scheduleVictoryVoice(leadFreq, when, dur, 'sawtooth', 0.085, 2900, 950, bus);
+      scheduleVictoryVoice(leadFreq * 1.004, when, dur, 'sawtooth', 0.065, 2700, 900, bus);
+      scheduleVictoryVoice(leadFreq * 0.5, when, dur, 'triangle', 0.06, 1600, 600, bus);
+    }
+
+    // Celebratory beat pulse (kick on downbeats, bright shimmer on offbeats)
+    if (stepIdx % 4 === 0) {
+      const kick = ctx.createOscillator(); kick.type = 'sine';
+      kick.frequency.setValueAtTime(128, when);
+      kick.frequency.exponentialRampToValueAtTime(42, when + 0.11);
+      const kg = ctx.createGain();
+      kg.gain.setValueAtTime(0.18, when);
+      kg.gain.exponentialRampToValueAtTime(0.0008, when + 0.14);
+      kick.connect(kg); kg.connect(bus);
+      victoryLoop.nodes.add(kick);
+      kick.onended = () => victoryLoop.nodes.delete(kick);
+      kick.start(when); kick.stop(when + 0.16);
+    } else if (stepIdx % 2 === 1 && noiseBuf) {
+      const hat = ctx.createBufferSource(); hat.buffer = noiseBuf;
+      const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 5200;
+      const hg = ctx.createGain();
+      hg.gain.setValueAtTime(0.032, when);
+      hg.gain.exponentialRampToValueAtTime(0.0008, when + 0.06);
+      hat.connect(hp); hp.connect(hg); hg.connect(bus);
+      victoryLoop.nodes.add(hat);
+      hat.onended = () => victoryLoop.nodes.delete(hat);
+      hat.start(when); hat.stop(when + 0.08);
+    }
+  };
+
+  victoryLoop.nextTime = ctx.currentTime + 0.03;
+  const tickScheduler = () => {
+    if (!victoryLoop.active || !ctx) return;
+    while (victoryLoop.nextTime < ctx.currentTime + 0.16) {
+      scheduleStep(victoryLoop.step, victoryLoop.nextTime);
+      victoryLoop.step = (victoryLoop.step + 1) % 32;
+      victoryLoop.nextTime += STEP_SEC;
+    }
+  };
+  tickScheduler();
+  victoryLoop.timer = window.setInterval(tickScheduler, 50);
+}
+
+export function playFinishSound(finalPosition = 1) {
+  fanfareDone = true;
+  stopVictoryMusic();
+  if (!audioReady || !ctx) return;
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  const t = ctx.currentTime;
+
+  // Bright chequered-flag air-horn / chime fanfare (plays for all finishers)
+  const hornChord = [523.25, 659.25, 783.99];
+  for (const [delay, dur] of [[0, 0.20], [0.22, 0.48]]) {
+    const ht = t + delay;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(3200, ht);
+    lp.frequency.exponentialRampToValueAtTime(1400, ht + dur);
+    const hg = ctx.createGain();
+    hg.gain.setValueAtTime(0.0001, ht);
+    hg.gain.linearRampToValueAtTime(0.11, ht + 0.015);
+    hg.gain.exponentialRampToValueAtTime(0.0008, ht + dur);
+    lp.connect(hg); hg.connect(master);
+    for (const freq of hornChord) {
+      const o = ctx.createOscillator(); o.type = 'sawtooth';
+      o.frequency.setValueAtTime(freq, ht);
+      o.connect(lp); o.start(ht); o.stop(ht + dur + 0.03);
+    }
+  }
+  tone(1046.50, 0.35, 0.11, 0.02, 'triangle');
+  tone(1567.98, 0.50, 0.10, 0.24, 'triangle');
+
+  if (finalPosition >= 1 && finalPosition <= 3) {
+    // 1st-3rd Podium Finish: launch celebratory F1 Podium Victory Synth-Orchestral Melody
+    victoryLoop.startTimeout = window.setTimeout(() => {
+      victoryLoop.startTimeout = 0;
+      startPodiumVictoryMusic();
+    }, 640);
+  } else {
+    // 4th-8th: pleasant race-completion resolution jingle without podium anthem loop
+    const notes = [523.25, 587.33, 659.25, 783.99];
+    notes.forEach((f, i) => tone(f, i === 3 ? 0.65 : 0.22, 0.11, 0.55 + i * 0.13, 'triangle'));
+    tone(261.63, 0.85, 0.09, 0.55, 'sine');
+    tone(392.00, 0.85, 0.07, 0.55, 'sine');
+  }
 }
 
 export function updateAudio(carState) {
@@ -358,9 +761,6 @@ export function updateAudio(carState) {
   screech.bp.frequency.setTargetAtTime(1100 + speedFrac * 900, t, 0.1);
   curb.g.gain.setTargetAtTime(!isDead && carState.onCurb && carState.speedKmh > 20 ? 0.07 : 0, t, 0.04);
 
-  const hit = carState.hitIntensity || 0;
-  if (hit > 0.22 && hit > prevHit + 0.12) thud(hit);
-  prevHit = hit;
   if (carState.drsActive && !prevDrs) burst({ type: 'bandpass', freq: 600, q: 1.4, gain: 0.08, dur: 0.28, sweepTo: 3000 });
   prevDrs = !!carState.drsActive;
 }
@@ -581,9 +981,7 @@ function openFinish(rs) {
     }
   }
   if (!fanfareDone) {
-    fanfareDone = true;
-    const notes = rs.playerPosition === 1 ? [523, 659, 784, 1046] : [440, 554, 659];
-    notes.forEach((f, i) => tone(f, 0.5, 0.14, i * 0.16, 'triangle'));
+    playFinishSound(rs.playerPosition);
   }
 }
 function openDnf(rs) {
@@ -593,8 +991,7 @@ function openDnf(rs) {
   setText(els.dnfPos, `P${rs.playerPosition || 1}`);
   els.dnfModal?.classList.add('open');
   if (!dnfSoundDone) {
-    dnfSoundDone = true;
-    playDnfSound();
+    playGameOverSound();
   }
 }
 function closeDnf() {
@@ -604,11 +1001,13 @@ function closeDnf() {
 }
 function closeFinish() {
   modalOpen = false; fanfareDone = false; finishSig = '';
+  stopVictoryMusic();
   els.modal?.classList.remove('open');
   if (els.confetti) els.confetti.innerHTML = '';
 }
 function requestRestart() {
   initAudio();
+  stopVictoryMusic();
   window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyR', key: 'r', bubbles: true }));
   window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyR', key: 'r', bubbles: true }));
 }
@@ -757,6 +1156,7 @@ export function initHud() {
   setMuted(false);
 
   return function cleanupHud() {
+    stopVictoryMusic();
     clearTimeout(bootTimeout);
     clearTimeout(announceTimer);
     window.removeEventListener('resize', onResize);
