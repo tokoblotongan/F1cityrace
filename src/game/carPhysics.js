@@ -1360,6 +1360,11 @@ export function updateCarPhysics(car, controls, trackData, dt) {
   const speedMult = h >= 70 ? 1.0 : h >= 35 ? 0.92 : h > 0 ? 0.8 : 0;
   const gripMult = h >= 70 ? 1.0 : h >= 35 ? 0.97 : h > 0 ? 0.8 : 0.4;
 
+  const weatherGrip = trackData.weatherGrip ?? 1.0;
+  const weatherBrake = trackData.weatherBrake ?? 1.0;
+  const weatherTraction = trackData.weatherTraction ?? 1.0;
+  const effGrip = gripMult * weatherGrip;
+
   const thr = isDead ? 0 : clamp(controls?.throttle ?? 0, 0, 1);
   const brk = isDead ? 1 : clamp(controls?.brake ?? 0, 0, 1);
   const steer = isDead ? 0 : clamp(controls?.steer ?? 0, -1, 1);
@@ -1375,44 +1380,54 @@ export function updateCarPhysics(car, controls, trackData, dt) {
   const drsActive = !!(!isDead && controls?.drs && drsAvailable && brk < 0.15);
 
   if (dt > 0) {
-    // Longitudinal F1 powertrain + progressive damage speed penalty + aero drag + braking
+    // Longitudinal F1 powertrain + progressive damage & wet-weather traction/braking + aero drag
     const maxV = isDead ? 0 : TOP_SPEED * speedMult * (drsActive ? 1.1 : 1.0);
-    const accelPower = isDead ? 0 : thr * (30 * speedMult - 0.18 * P.speed);
+    const accelPower = isDead ? 0 : thr * (30 * speedMult * weatherTraction - 0.18 * P.speed);
     const aeroDrag = 0.0032 * P.speed * P.speed + 0.12 * P.speed;
-    const brakeForce = brk * 42;
+    const brakeForce = brk * 42 * weatherBrake;
     const rolling = 0.45;
 
     P.speed = clamp(P.speed + (accelPower - brakeForce - aeroDrag - rolling) * dt, 0, Math.max(0, maxV || P.speed));
     if (isDead && P.speed < 0.25) P.speed = 0;
 
-    // Downforce-scaled steering + collision yaw deflection with counter-steer damping
-    const maxLatA = (A0 + A1 * P.speed * P.speed) * gripMult;
+    // Downforce-scaled steering + wet-weather controllable oversteer + collision yaw deflection
+    const maxLatA = (A0 + A1 * P.speed * P.speed) * effGrip;
     const steerRadiusScale = 1 / (1 + P.speed * 0.021);
     const maxYawRate = Math.min(2.35 * steerRadiusScale, maxLatA / Math.max(P.speed, 6));
     const yawDelta = steer * maxYawRate * dt * (P.speed > 0.5 ? Math.min(1, P.speed / 5) : 0);
+
+    if (weatherGrip < 0.96 && !isDead && P.speed > 14 && Math.abs(steer) > 0.25) {
+      const wetness = clamp((1.0 - weatherGrip) / 0.28, 0, 1);
+      const speedLoad = clamp((P.speed - 14) / 48, 0, 1);
+      const oversteerDrive = (thr > 0.68 ? 1.15 : 0.45) * Math.abs(steer) * wetness * speedLoad;
+      P.yawVel = clamp((P.yawVel || 0) + steer * oversteerDrive * 0.42 * dt, -1.65, 1.65);
+      P.latVel = clamp((P.latVel || 0) - steer * oversteerDrive * 4.2 * dt, -12, 12);
+    }
+
     const yawVel = P.yawVel || 0;
     P.yaw = wrapAngle(P.yaw + yawDelta + yawVel * dt);
 
     if (yawVel !== 0) {
       const counterSteer = steer * yawVel < 0 ? Math.abs(steer) * 6.5 : 0;
-      const yawDamp = 4.4 + gripMult * 1.4 + counterSteer;
+      const yawDamp = 4.4 + effGrip * 1.4 + counterSteer;
       P.yawVel = yawVel * Math.exp(-yawDamp * dt);
       if (Math.abs(P.yawVel) < 0.005) P.yawVel = 0;
     }
 
     const latVel = P.latVel || 0;
     const reqLatA = Math.abs(steer) * maxYawRate * P.speed;
+    const wetSlideThresh = weatherGrip < 0.96 ? 0.76 : 0.84;
     const knockSlip = clamp((Math.abs(latVel) - 1.2) / 8 + Math.abs(P.yawVel || 0) * 0.45, 0, 1);
-    const isSlidingTarget = (reqLatA > maxLatA * 0.84 && P.speed > 14) || knockSlip > 0.25 ? 1 : 0;
+    const isSlidingTarget = (reqLatA > maxLatA * wetSlideThresh && P.speed > 14) || knockSlip > 0.25 ? 1 : 0;
     P.slip += (isSlidingTarget - P.slip) * Math.min(1, 8 * dt);
 
-    // Advance along heading + lateral knock drift
+    // Advance along heading + lateral knock/wet drift
     _fwd.set(-Math.sin(P.yaw), 0, -Math.cos(P.yaw));
     _right.set(Math.cos(P.yaw), 0, -Math.sin(P.yaw));
     car.position.addScaledVector(_fwd, P.speed * dt);
     if (latVel !== 0) {
       car.position.addScaledVector(_right, latVel * dt);
-      const latDamp = (4.8 + gripMult * 2.8) * (P.knockTimer > 0 ? 0.72 : 1.0);
+      const latDamp = (4.8 + effGrip * 2.8) * (P.knockTimer > 0 ? 0.72 : 1.0);
       P.latVel = latVel * Math.exp(-latDamp * dt);
       if (Math.abs(P.latVel) < 0.02) P.latVel = 0;
     }

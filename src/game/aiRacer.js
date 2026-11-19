@@ -230,11 +230,15 @@ function computeAIControls(car, cars, trackData, prof, session, dt) {
   let target = TOP_SPEED * skill.top * (drsNow ? 1.1 : 1);
   if (R.finished) target = 12.5;   // cool-down lap after the flag
 
-  const horizon = Math.min(prof.N - 1, Math.ceil((speed * speed / (2 * PLAN_BRK) + 45) / prof.segLen));
-  const cs2 = skill.corner * skill.corner;
+  const weatherGrip = trackData.weatherGrip ?? 1.0;
+  const weatherBrake = trackData.weatherBrake ?? 1.0;
+  const effPlanBrk = PLAN_BRK * weatherBrake;
+
+  const horizon = Math.min(prof.N - 1, Math.ceil((speed * speed / (2 * effPlanBrk) + 45) / prof.segLen));
+  const cs2 = skill.corner * skill.corner * weatherGrip * weatherGrip;
   for (let k = 0; k <= horizon; k += 2) {
     const j = (idx + k) % prof.N;
-    const allowed = Math.sqrt(prof.corner2[j] * cs2 + 2 * PLAN_BRK * k * prof.segLen);
+    const allowed = Math.sqrt(prof.corner2[j] * cs2 + 2 * effPlanBrk * k * prof.segLen);
     if (allowed < target) target = allowed;
   }
 
@@ -389,36 +393,41 @@ function computeStandings(cars, trackData, session) {
 }
 
 // ==========================================================================================
-export function updateAIRacers(aiList, allCars, trackData, dt) {
+export function updateAIRacers(aiList, allCars, trackData, dt, holdOnGrid = false) {
   const session = getSession(trackData);
   const prof = getProfile(trackData);
   const sd = trackData.trackCurve.userData.samples;
   const cars = (allCars && allCars.length) ? allCars : aiList;
 
-  advanceSession(session, dt);
+  if (!holdOnGrid) {
+    advanceSession(session, dt);
+  }
   for (const car of cars) ensureRace(car, trackData);
   for (const car of cars) localize(car, sd);
 
-  // rivals drive through the shared physics pipeline (grip, DRS, barriers, sparks)
-  for (const car of aiList) {
-    const controls = computeAIControls(car, cars, trackData, prof, session, dt);
-    updateCarPhysics(car, controls, trackData, dt);
-    localize(car, sd);
-  }
+  let collisionEvents = [];
+  if (!holdOnGrid) {
+    // rivals drive through the shared physics pipeline (grip, DRS, barriers, sparks)
+    for (const car of aiList) {
+      const controls = computeAIControls(car, cars, trackData, prof, session, dt);
+      updateCarPhysics(car, controls, trackData, dt);
+      localize(car, sd);
+    }
 
-  // Solid OBB car-to-car collision separation + momentum transfer + yaw deflection
-  const collisionEvents = resolveCarCollisions(cars, trackData, dt);
-  for (const car of cars) localize(car, sd);
-  for (const ev of collisionEvents) {
-    if (ev.closingSpeed > 2.2) {
-      for (const c of [ev.carA, ev.carB]) {
-        if (!c.userData.isPlayer && c.userData.race) {
-          c.userData.race.latTarget += (c.userData.race.lateral - c.userData.race.latTarget) * 0.55;
+    // Solid OBB car-to-car collision separation + momentum transfer + yaw deflection
+    collisionEvents = resolveCarCollisions(cars, trackData, dt);
+    for (const car of cars) localize(car, sd);
+    for (const ev of collisionEvents) {
+      if (ev.closingSpeed > 2.2) {
+        for (const c of [ev.carA, ev.carB]) {
+          if (!c.userData.isPlayer && c.userData.race) {
+            c.userData.race.latTarget += (c.userData.race.lateral - c.userData.race.latTarget) * 0.55;
+          }
         }
       }
     }
+    for (const car of cars) validateLap(car, trackData, session);
   }
-  for (const car of cars) validateLap(car, trackData, session);
 
   const standings = computeStandings(cars, trackData, session);
   const player = cars.find(c => c.userData.isPlayer) || cars[0];
@@ -436,6 +445,7 @@ export function updateAIRacers(aiList, allCars, trackData, dt) {
     startLights: session.lightsOn,
     isFinished: PR.finished,
     phase: session.phase,
+    waitingToStart: !!holdOnGrid,
     raceTime: session.raceTime,
     lastLapTime: PR.lastLapTime,
     playerPosition: pos,

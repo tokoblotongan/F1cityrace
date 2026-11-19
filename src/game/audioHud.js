@@ -210,7 +210,7 @@ function mmDraw(raceState, now) {
 // 2 · WEB AUDIO — V6 turbo-hybrid engine, screech, impacts, UI tones
 // ═══════════════════════════════════════════════════════════════════════════
 let ctx = null, master = null, noiseBuf = null, pinkNoiseBuf = null, audioReady = false, muted = false;
-let engine = null, screech = null, curb = null, scrape = null, shiftCutUntil = 0;
+let engine = null, screech = null, curb = null, scrape = null, rainLoop = null, shiftCutUntil = 0;
 let latestCarState = null;
 let prevGear = 1, prevDrs = false;
 
@@ -276,6 +276,26 @@ function buildLoops() {
   scrapeGain.connect(master);
   scrapeSrc.start(); crunchSrc.start();
   scrape = { bp: scrapeBp, crunchBp, g: scrapeGain };
+
+  // Continuous filtered pink-noise rain patter loop (modulated by weather & tunnel)
+  const rainSrc = ctx.createBufferSource();
+  rainSrc.buffer = pinkNoiseBuf || noiseBuf;
+  rainSrc.loop = true;
+  const rainBp = ctx.createBiquadFilter();
+  rainBp.type = 'bandpass';
+  rainBp.frequency.value = 1350;
+  rainBp.Q.value = 0.55;
+  const rainLp = ctx.createBiquadFilter();
+  rainLp.type = 'lowpass';
+  rainLp.frequency.value = 4200;
+  const rainGain = ctx.createGain();
+  rainGain.gain.value = 0;
+  rainSrc.connect(rainBp);
+  rainBp.connect(rainLp);
+  rainLp.connect(rainGain);
+  rainGain.connect(master);
+  rainSrc.start();
+  rainLoop = { bp: rainBp, lp: rainLp, g: rainGain };
 }
 export function initAudio() {
   if (ctx) { if (ctx.state === 'suspended') ctx.resume().catch(() => {}); return true; }
@@ -453,6 +473,65 @@ export function playRepairSound() {
   burst({ type: 'highpass', freq: 2400, q: 2.0, gain: 0.07, dur: 0.06 });
 }
 
+export function playThunderSound(intensity = 1.0) {
+  if (!audioReady || !ctx || ctx.state !== 'running' || muted) return;
+  const t = ctx.currentTime;
+  const str = clamp(intensity, 0.4, 1.25);
+
+  // Sharp cloud-to-ground crack transient
+  burst({
+    type: 'bandpass',
+    freq: 940,
+    q: 0.72,
+    gain: 0.22 * str,
+    dur: 0.28,
+    sweepTo: 180,
+    usePink: false,
+  });
+
+  // Deep rolling lowpass-swept pink-noise thunderclap + echo swells
+  const rumbles = [
+    { delay: 0.04, freqStart: 420, freqEnd: 58, gain: 0.42 * str, dur: 1.9 },
+    { delay: 0.36, freqStart: 290, freqEnd: 48, gain: 0.32 * str, dur: 2.3 },
+    { delay: 0.92, freqStart: 220, freqEnd: 42, gain: 0.21 * str, dur: 2.1 },
+  ];
+  for (const r of rumbles) {
+    const st = t + r.delay;
+    const src = ctx.createBufferSource();
+    src.buffer = pinkNoiseBuf || noiseBuf;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.Q.value = 1.1;
+    lp.frequency.setValueAtTime(r.freqStart, st);
+    lp.frequency.exponentialRampToValueAtTime(r.freqEnd, st + r.dur);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, st);
+    g.gain.linearRampToValueAtTime(r.gain, st + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.0008, st + r.dur);
+
+    src.connect(lp);
+    lp.connect(g);
+    g.connect(master);
+    src.start(st);
+    src.stop(st + r.dur + 0.05);
+  }
+
+  // Sub-bass pressure thump
+  const sub = ctx.createOscillator();
+  sub.type = 'sine';
+  sub.frequency.setValueAtTime(86, t + 0.03);
+  sub.frequency.exponentialRampToValueAtTime(28, t + 1.1);
+  const sg = ctx.createGain();
+  sg.gain.setValueAtTime(0.0001, t + 0.03);
+  sg.gain.linearRampToValueAtTime(0.26 * str, t + 0.08);
+  sg.gain.exponentialRampToValueAtTime(0.0008, t + 1.15);
+  sub.connect(sg);
+  sg.connect(master);
+  sub.start(t + 0.03);
+  sub.stop(t + 1.18);
+}
+
 // 3 · Game Over / DNF Audio (immediate engine cut, power-down spin-down + 3-note brass defeat chord)
 const victoryLoop = {
   active: false,
@@ -505,6 +584,7 @@ export function playGameOverSound() {
   if (screech) screech.g.gain.setTargetAtTime(0, t, 0.02);
   if (curb) curb.g.gain.setTargetAtTime(0, t, 0.02);
   if (scrape) scrape.g.gain.setTargetAtTime(0, t, 0.02);
+  if (rainLoop) rainLoop.g.gain.setTargetAtTime(0, t, 0.12);
 
   // Dramatic engine power-down spin-down
   const spinFilter = ctx.createBiquadFilter();
@@ -783,6 +863,23 @@ export function updateAudio(carState) {
 
   if (carState.drsActive && !prevDrs) burst({ type: 'bandpass', freq: 600, q: 1.4, gain: 0.08, dur: 0.28, sweepTo: 3000 });
   prevDrs = !!carState.drsActive;
+
+  if (rainLoop) {
+    const rainAmt = !isDead ? clamp(carState.rainIntensity || 0, 0, 1) : 0;
+    const tunnelMuffle = carState.inTunnel ? 0.18 : 1.0;
+    const targetRainGain = rainAmt > 0.01 ? (0.028 + rainAmt * 0.115) * tunnelMuffle : 0;
+    rainLoop.g.gain.setTargetAtTime(targetRainGain, t, 0.16);
+    rainLoop.lp.frequency.setTargetAtTime(
+      carState.inTunnel ? 900 : 2100 + rainAmt * 2600,
+      t,
+      0.16
+    );
+    rainLoop.bp.frequency.setTargetAtTime(
+      carState.inTunnel ? 500 : 1050 + rainAmt * 550,
+      t,
+      0.16
+    );
+  }
 }
 
 function setMuted(m) {
@@ -920,8 +1017,12 @@ function updateEvents(rs, now) {
       prevPos = rs.playerPosition;
       posToastAt = 0;
     }
-    if (rs.startLights > prevLights) tone(660, 0.14, 0.12);
-    announce('MONACO GP', 'STREET CIRCUIT CHALLENGE · 3 LAPS · 8 CARS', '', 0);
+    if (!rs.waitingToStart) {
+      if (rs.startLights > prevLights) tone(660, 0.14, 0.12);
+      announce('MONACO GP', 'STREET CIRCUIT CHALLENGE · 3 LAPS · 8 CARS', '', 0);
+    } else if (els.announce) {
+      els.announce.className = '';
+    }
     els.hint?.classList.remove('dim');
   } else if (prevPhase === 'LIGHTS' && rs.phase === 'RACING') {
     announce('LIGHTS OUT', 'GO · GO · GO', 'green', 1500);
@@ -1119,6 +1220,8 @@ export function initHud() {
   els.audioToggle?.addEventListener('click', onAudioClick);
 
   const onKeyDown = (e) => {
+    const activeTag = document.activeElement?.tagName;
+    if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
     if (e.code === 'KeyM' && !e.repeat) { initAudio(); setMuted(!muted); }
     if (e.code === 'Enter' && (modalOpen || dnfOpen)) requestRestart();
   };

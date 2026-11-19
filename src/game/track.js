@@ -2110,12 +2110,14 @@ export function buildMonacoTrack(scene) {
   // Track surface & curbs
   const asphaltTex = makeAsphaltTextures();
   const asphaltMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
     map: asphaltTex.map,
     roughnessMap: asphaltTex.roughnessMap,
     bumpMap: asphaltTex.bumpMap,
     bumpScale: 0.04,
     roughness: 0.78,
     metalness: 0.05,
+    envMapIntensity: 0.7,
   });
   scene.add(buildRibbon(samples, -HALF_WIDTH, HALF_WIDTH, 0.0, asphaltMat));
 
@@ -2123,6 +2125,7 @@ export function buildMonacoTrack(scene) {
     map: makeCurbTexture(),
     roughness: 0.65,
     metalness: 0.04,
+    envMapIntensity: 0.65,
   });
   scene.add(buildRibbon(samples, -HALF_WIDTH - 1.05, -HALF_WIDTH + 0.05, 0.025, curbMat));
   scene.add(buildRibbon(samples, HALF_WIDTH - 0.05, HALF_WIDTH + 1.05, 0.025, curbMat));
@@ -4128,6 +4131,8 @@ export function buildMonacoTrack(scene) {
       length: totalLength,
       halfWidth: HALF_WIDTH,
       waterMaterial,
+      asphaltMaterial: asphaltMat,
+      curbMaterial: curbMat,
       tunnel: { uStart: tunnelStart, uEnd: tunnelEnd },
       envTime,
       playerPos: playerPosUniform,
@@ -4140,5 +4145,9 @@ export function buildMonacoTrack(scene) {
     drsZones,
     checkpoints,
     repairTokens,
+    weather: 'cerah',
+    weatherGrip: 1.0,
+    weatherBrake: 1.0,
+    weatherTraction: 1.0,
   };
 }

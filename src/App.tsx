@@ -1,6 +1,11 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { initHud } from './game/audioHud.js';
-import { RaceFinishResult, startMonacoEngine } from './game/engine.ts';
+import { initAudio, initHud } from './game/audioHud.js';
+import {
+  EngineController,
+  RaceFinishResult,
+  WeatherType,
+  startMonacoEngine,
+} from './game/engine.ts';
 
 const RECORDS_STORAGE_KEY = 'f1_monaco_podium_records';
 const LAST_NAME_STORAGE_KEY = 'f1_monaco_last_driver_name';
@@ -114,10 +119,103 @@ function getMedalBadgeClass(pos: 1 | 2 | 3): string {
   return 'bg-gradient-to-b from-[#e0a272] to-[#9c5a34] text-[#0b0f16]';
 }
 
+interface WeatherOption {
+  id: WeatherType;
+  label: string;
+  shortLabel: string;
+  subtitle: string;
+  gripBadge: string;
+  description: string;
+  activeCardCls: string;
+  badgeCls: string;
+  iconColorCls: string;
+}
+
+const WEATHER_OPTIONS: WeatherOption[] = [
+  {
+    id: 'cerah',
+    label: 'CERAH',
+    shortLabel: 'CERAH',
+    subtitle: 'Sunny Mediterranean',
+    gripBadge: '100% GRIP · DRY',
+    description: 'Clear azure sky, golden sunlight, white clouds & dry high-grip asphalt.',
+    activeCardCls:
+      'border-[#facc15] bg-gradient-to-b from-[#facc15]/18 to-[#0b0f16]/90 shadow-[0_0_24px_rgba(250,204,21,0.28)]',
+    badgeCls: 'bg-[#facc15]/20 text-[#fde047] border-[#facc15]/45',
+    iconColorCls: 'text-[#facc15]',
+  },
+  {
+    id: 'hujan',
+    label: 'HUJAN LEBAT',
+    shortLabel: 'HUJAN',
+    subtitle: 'Heavy Storm & Thunder',
+    gripBadge: '72% GRIP · WET',
+    description: 'Stormy sky, diagonal downpour, lightning flashes, tire spray & wet drift.',
+    activeCardCls:
+      'border-[#38bdf8] bg-gradient-to-b from-[#38bdf8]/20 to-[#0b0f16]/90 shadow-[0_0_24px_rgba(56,189,248,0.3)]',
+    badgeCls: 'bg-[#38bdf8]/20 text-[#7dd3fc] border-[#38bdf8]/45',
+    iconColorCls: 'text-[#38bdf8]',
+  },
+  {
+    id: 'kabut',
+    label: 'BERKABUT & GERIMIS',
+    shortLabel: 'KABUT',
+    subtitle: 'Misty Drizzle',
+    gripBadge: '86% GRIP · DAMP',
+    description: 'Dense coastal sea-fog limiting forward sight, fine drizzle & damp tarmac.',
+    activeCardCls:
+      'border-[#00d2be] bg-gradient-to-b from-[#94a3b8]/22 to-[#0b0f16]/90 shadow-[0_0_24px_rgba(0,210,190,0.26)]',
+    badgeCls: 'bg-[#94a3b8]/20 text-[#cbd5e1] border-[#94a3b8]/45',
+    iconColorCls: 'text-[#cbd5e1]',
+  },
+];
+
+function WeatherIcon({ type, className = 'w-6 h-6' }: { type: WeatherType; className?: string }) {
+  if (type === 'cerah') {
+    return (
+      <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <circle cx="12" cy="12" r="4.5" fill="currentColor" />
+        <path strokeLinecap="round" d="M12 2.5v2.2M12 19.3v2.2M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6" />
+      </svg>
+    );
+  }
+  if (type === 'hujan') {
+    return (
+      <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="currentColor"
+          fillOpacity="0.22"
+          d="M6.5 15h10.8a3.7 3.7 0 0 0 .4-7.38A5.2 5.2 0 0 0 7.6 6.7 4 4 0 0 0 6.5 15Z"
+        />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" className="text-[#facc15]" stroke="currentColor" d="M13 13.5l-2 3.5h2.5l-1.5 3.5" />
+        <path strokeLinecap="round" d="M7.5 17.5l-1 2.5M17 17.5l-1 2.5" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="currentColor"
+        fillOpacity="0.2"
+        d="M6.2 13.5h11.3a3.4 3.4 0 0 0 .3-6.78 4.8 4.8 0 0 0-9.3-.8A3.8 3.8 0 0 0 6.2 13.5Z"
+      />
+      <path strokeLinecap="round" d="M4.5 16.5h15M6.5 19.5h11" />
+    </svg>
+  );
+}
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const controllerRef = useRef<EngineController | null>(null);
   const [webglError, setWebglError] = useState<string | null>(null);
+  const [weather, setWeather] = useState<WeatherType>('cerah');
+  const [raceStarted, setRaceStarted] = useState(false);
+  const [showWeatherMenu, setShowWeatherMenu] = useState(false);
   const [showMinimap, setShowMinimap] = useState(true);
   const [records, setRecords] = useState<PodiumRecord[]>(() => loadStoredRecords());
   const [finishResult, setFinishResult] = useState<RaceFinishResult | null>(null);
@@ -141,6 +239,7 @@ export default function App() {
       }
       if (e.code === 'Escape') {
         setShowHallOfFameModal(false);
+        setShowWeatherMenu(false);
         return;
       }
       if (e.code === 'KeyN' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -157,6 +256,10 @@ export default function App() {
 
     const cleanupHud = initHud();
     const cleanupEngine = startMonacoEngine(canvas, {
+      initialWeather: 'cerah',
+      onReady: (ctrl) => {
+        controllerRef.current = ctrl;
+      },
       onWebGLError: (msg) => setWebglError(msg),
       onChequeredCountdown: (sec) => setChequeredCountdown(sec),
       onRaceFinish: (result) => {
@@ -166,12 +269,14 @@ export default function App() {
         setChequeredCountdown(null);
         if (result) {
           setShowHallOfFameModal(false);
+          setShowWeatherMenu(false);
           setDriverName((prev) => prev || loadLastDriverName());
         }
       },
     });
 
     return () => {
+      controllerRef.current = null;
       cleanupEngine();
       cleanupHud();
     };
@@ -208,6 +313,28 @@ export default function App() {
     }
     return () => observer.disconnect();
   }, [finishResult, savedDriverName]);
+
+  const handleSelectStartWeather = (w: WeatherType) => {
+    setWeather(w);
+    controllerRef.current?.setWeather(w);
+  };
+
+  const handleStartRace = () => {
+    initAudio();
+    setShowWeatherMenu(false);
+    setRaceStarted(true);
+    controllerRef.current?.startRace(weather);
+  };
+
+  const handleRestartWithWeather = (w: WeatherType) => {
+    initAudio();
+    setWeather(w);
+    setShowWeatherMenu(false);
+    setRaceStarted(true);
+    controllerRef.current?.restartWithWeather(w);
+  };
+
+  const activeWeatherOpt = WEATHER_OPTIONS.find((opt) => opt.id === weather) || WEATHER_OPTIONS[0];
 
   const handleSaveRecord = (e?: FormEvent) => {
     e?.preventDefault();
@@ -472,6 +599,7 @@ export default function App() {
           type="button"
           onClick={(e) => {
             e.currentTarget.blur();
+            setShowWeatherMenu(false);
             setShowHallOfFameModal(true);
           }}
           title="Circuit Hall of Fame — Top Records"
@@ -493,6 +621,67 @@ export default function App() {
             </span>
           )}
         </button>
+
+        {/* Top-right · Active Weather Badge + quick weather-switch restart menu */}
+        {raceStarted && (
+          <div className="pointer-events-auto fixed top-[14px] right-[126px] sm:right-[194px] z-20">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.currentTarget.blur();
+                setShowWeatherMenu((prev) => !prev);
+              }}
+              aria-expanded={showWeatherMenu}
+              title="Track weather & grip — click to switch weather and restart"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#0b0f16]/82 border border-[rgba(242,239,230,0.18)] hover:border-[#00d2be] text-[#f2efe6] shadow-lg transition cursor-pointer"
+            >
+              <WeatherIcon type={activeWeatherOpt.id} className={`w-3.5 h-3.5 shrink-0 ${activeWeatherOpt.iconColorCls}`} />
+              <span className="text-[10px] font-black tracking-[0.14em]">{activeWeatherOpt.shortLabel}</span>
+              <span className={`hidden sm:inline-block px-1.5 py-0.5 rounded border text-[8px] font-black tracking-[0.1em] ${activeWeatherOpt.badgeCls}`}>
+                {activeWeatherOpt.gripBadge.split('·')[0].trim()}
+              </span>
+            </button>
+
+            {showWeatherMenu && (
+              <div className="mt-1.5 w-[228px] rounded-xl bg-[#0d121a]/95 border border-white/20 p-2 shadow-2xl backdrop-blur-md">
+                <div className="px-2 pb-1.5 mb-1.5 border-b border-white/10 text-[9px] font-black tracking-[0.18em] text-[#f2efe6]/55">
+                  SWITCH WEATHER &amp; RESTART
+                </div>
+                <div className="space-y-1">
+                  {WEATHER_OPTIONS.map((opt) => {
+                    const isCurrent = opt.id === weather;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={(e) => {
+                          e.currentTarget.blur();
+                          handleRestartWithWeather(opt.id);
+                        }}
+                        className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border text-left transition cursor-pointer ${
+                          isCurrent
+                            ? 'border-[#00d2be]/70 bg-[#00d2be]/15 text-white'
+                            : 'border-white/10 bg-white/[0.03] hover:bg-white/10 text-[#f2efe6]/85'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <WeatherIcon type={opt.id} className={`w-4 h-4 shrink-0 ${opt.iconColorCls}`} />
+                          <div className="min-w-0">
+                            <div className="text-[10px] font-black tracking-[0.12em] truncate">{opt.label}</div>
+                            <div className="text-[9px] text-[#f2efe6]/55 truncate">{opt.subtitle}</div>
+                          </div>
+                        </div>
+                        <span className="text-[8px] font-black tracking-[0.1em] text-[#00d2be] shrink-0">
+                          {isCurrent ? 'ACTIVE' : 'GO'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Chequered Flag post-leader countdown warning banner */}
         {chequeredCountdown !== null && !finishResult && (
@@ -658,6 +847,36 @@ export default function App() {
             {renderHallOfFameRows(true)}
           </div>
 
+          {/* Weather switcher row before Restart */}
+          <div className="mt-3.5 rounded-lg border border-white/12 bg-[#070a10]/65 px-3 py-2 text-left">
+            <div className="text-[9px] font-black tracking-[0.2em] text-[#f2efe6]/55 mb-1.5">
+              RESTART IN DIFFERENT WEATHER
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {WEATHER_OPTIONS.map((opt) => {
+                const isSelected = opt.id === weather;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={(e) => {
+                      e.currentTarget.blur();
+                      handleRestartWithWeather(opt.id);
+                    }}
+                    className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md border text-[10px] font-black tracking-[0.1em] transition cursor-pointer ${
+                      isSelected
+                        ? 'border-[#00d2be] bg-[#00d2be]/15 text-white'
+                        : 'border-white/15 bg-white/[0.04] hover:bg-white/10 text-[#f2efe6]/80'
+                    }`}
+                  >
+                    <WeatherIcon type={opt.id} className={`w-3.5 h-3.5 shrink-0 ${opt.iconColorCls}`} />
+                    <span className="truncate">{opt.shortLabel}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <button id="race-again">
             RACE AGAIN <span className="key-cap">R</span>
           </button>
@@ -684,11 +903,135 @@ export default function App() {
               <span id="dnf-pos" className="mono">P8</span>
             </div>
           </div>
+
+          <div className="mt-3.5 rounded-lg border border-white/12 bg-[#070a10]/65 px-3 py-2 text-left">
+            <div className="text-[9px] font-black tracking-[0.2em] text-[#f2efe6]/55 mb-1.5">
+              RESTART IN DIFFERENT WEATHER
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {WEATHER_OPTIONS.map((opt) => {
+                const isSelected = opt.id === weather;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={(e) => {
+                      e.currentTarget.blur();
+                      handleRestartWithWeather(opt.id);
+                    }}
+                    className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md border text-[10px] font-black tracking-[0.1em] transition cursor-pointer ${
+                      isSelected
+                        ? 'border-[#00d2be] bg-[#00d2be]/15 text-white'
+                        : 'border-white/15 bg-white/[0.04] hover:bg-white/10 text-[#f2efe6]/80'
+                    }`}
+                  >
+                    <WeatherIcon type={opt.id} className={`w-3.5 h-3.5 shrink-0 ${opt.iconColorCls}`} />
+                    <span className="truncate">{opt.shortLabel}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <button id="dnf-race-again">
             RACE AGAIN <span className="key-cap">R</span>
           </button>
         </div>
       </div>
+
+      {/* Start Screen · Weather & Track Conditions Selection */}
+      {!raceStarted && !webglError && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="start-title"
+          className="fixed inset-0 z-30 flex items-center justify-center bg-gradient-to-b from-[#06090f]/75 via-[#06090f]/60 to-[#06090f]/82 backdrop-blur-[3px] p-4"
+        >
+          <div className="w-full max-w-[780px] rounded-2xl bg-[#0b0f16]/90 border border-white/18 border-t-[3px] border-t-[#e10600] px-5 py-6 sm:px-7 sm:py-7 shadow-[0_28px_80px_rgba(0,0,0,0.75)] text-[#f2efe6]">
+            <div className="text-center">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#e10600]/15 border border-[#e10600]/45 text-[10px] font-black tracking-[0.28em] text-[#ff6a55]">
+                CIRCUIT DE MONACO · 3 LAPS · 8 CARS
+              </div>
+              <h1
+                id="start-title"
+                className="mt-2.5 text-4xl sm:text-5xl font-black italic tracking-wide bg-gradient-to-r from-[#f2efe6] via-[#d8b24a] to-[#ff2d1a] bg-clip-text text-transparent"
+              >
+                MONACO GP
+              </h1>
+              <p className="mt-1 text-xs font-bold tracking-[0.26em] text-[#00d2be] uppercase">
+                SELECT WEATHER CONDITIONS
+              </p>
+            </div>
+
+            <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {WEATHER_OPTIONS.map((opt) => {
+                const selected = weather === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={(e) => {
+                      e.currentTarget.blur();
+                      handleSelectStartWeather(opt.id);
+                    }}
+                    aria-pressed={selected}
+                    className={`relative flex flex-col justify-between text-left rounded-xl border p-4 transition cursor-pointer ${
+                      selected
+                        ? opt.activeCardCls
+                        : 'border-white/15 bg-[#0e141e]/80 hover:border-white/35 hover:bg-[#131b28]/90'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className={`p-2 rounded-lg bg-white/[0.06] border border-white/10 ${opt.iconColorCls}`}>
+                          <WeatherIcon type={opt.id} className="w-6 h-6" />
+                        </div>
+                        <span className={`px-2 py-0.5 rounded border text-[9px] font-black tracking-[0.12em] ${opt.badgeCls}`}>
+                          {opt.gripBadge}
+                        </span>
+                      </div>
+                      <h2 className="mt-3 text-base font-black italic tracking-wide text-[#f2efe6]">
+                        {opt.label}
+                      </h2>
+                      <div className="text-[11px] font-bold tracking-[0.06em] text-[#00d2be]">
+                        {opt.subtitle}
+                      </div>
+                      <p className="mt-2 text-xs leading-relaxed text-[#f2efe6]/70">
+                        {opt.description}
+                      </p>
+                    </div>
+
+                    <div className="mt-3 pt-2.5 border-t border-white/10 flex items-center justify-between text-[10px] font-black tracking-[0.16em]">
+                      <span className={selected ? 'text-[#22ff88]' : 'text-[#f2efe6]/45'}>
+                        {selected ? '✓ SELECTED' : 'CLICK TO PREVIEW'}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-5 flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-white/10">
+              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-4 gap-y-1 text-[10px] font-bold tracking-[0.12em] text-[#f2efe6]/60">
+                <span><b className="text-[#f2efe6]">W/S</b> THROTTLE·BRAKE</span>
+                <span><b className="text-[#f2efe6]">A/D</b> STEER</span>
+                <span><b className="text-[#f2efe6]">SPACE</b> DRS</span>
+                <span><b className="text-[#f2efe6]">C</b> CAM</span>
+              </div>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  handleStartRace();
+                }}
+                className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-[#ff2d1a] to-[#e10600] text-[#f2efe6] text-sm font-black tracking-[0.24em] shadow-[0_10px_32px_rgba(225,6,0,0.5)] hover:brightness-110 active:scale-95 transition cursor-pointer"
+              >
+                START RACE
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

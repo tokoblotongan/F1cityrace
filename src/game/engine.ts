@@ -31,6 +31,7 @@ import {
   playCollisionSound,
   playGameOverSound,
   playFinishSound,
+  playThunderSound,
   stopVictoryMusic,
 } from './audioHud.js';
 
@@ -122,6 +123,12 @@ function createSkyDome(scene: THREE.Scene, sunDir: THREE.Vector3) {
       uSunDir: { value: sunDir.clone().normalize() },
       uSkyFade: { value: 1.0 },
       uTime: { value: 0 },
+      uHorizonCol: { value: new THREE.Color(0x4da6ff) },
+      uMidCol: { value: new THREE.Color(0x256fc8) },
+      uZenithCol: { value: new THREE.Color(0x1a4b8c) },
+      uSeaCol: { value: new THREE.Color(0x2e70b8) },
+      uSunStrength: { value: 1.0 },
+      uLightning: { value: 0.0 },
     },
     vertexShader: `
       varying vec3 vDir;
@@ -135,6 +142,12 @@ function createSkyDome(scene: THREE.Scene, sunDir: THREE.Vector3) {
       uniform vec3 uSunDir;
       uniform float uSkyFade;
       uniform float uTime;
+      uniform vec3 uHorizonCol;
+      uniform vec3 uMidCol;
+      uniform vec3 uZenithCol;
+      uniform vec3 uSeaCol;
+      uniform float uSunStrength;
+      uniform float uLightning;
       varying vec3 vDir;
 
       float hash(vec2 p) {
@@ -165,31 +178,29 @@ function createSkyDome(scene: THREE.Scene, sunDir: THREE.Vector3) {
         vec3 dir = normalize(vDir);
         float h = clamp(dir.y, 0.0, 1.0);
 
-        // Rich Mediterranean cobalt-azure sky gradient (#1a4b8c zenith -> #4da6ff horizon)
-        vec3 horizonCol = vec3(0.302, 0.651, 1.000);
-        vec3 midSkyCol  = vec3(0.145, 0.435, 0.785);
-        vec3 zenithCol  = vec3(0.102, 0.294, 0.549);
-        vec3 seaUnder   = vec3(0.180, 0.440, 0.720);
-
-        vec3 sky = mix(horizonCol, midSkyCol, smoothstep(0.0, 0.30, h));
-        sky = mix(sky, zenithCol, smoothstep(0.24, 0.92, h));
+        vec3 sky = mix(uHorizonCol, uMidCol, smoothstep(0.0, 0.30, h));
+        sky = mix(sky, uZenithCol, smoothstep(0.24, 0.92, h));
         if (dir.y < 0.0) {
-          sky = mix(horizonCol, seaUnder, smoothstep(0.0, 0.25, -dir.y));
+          sky = mix(uHorizonCol, uSeaCol, smoothstep(0.0, 0.25, -dir.y));
         }
 
-        // Subtle high-altitude wispy cirrus & distant horizon cumulus strata
+        // Subtle high-altitude wispy cirrus & storm cloud strata
         if (dir.y > 0.02) {
           vec2 uvCirrus = dir.xz / (dir.y + 0.16) * 1.45 + vec2(uTime * 0.004, 0.0);
           float wisp = fbm(uvCirrus * 1.8);
           float wispMask = smoothstep(0.54, 0.82, wisp) * smoothstep(0.02, 0.22, dir.y) * smoothstep(0.95, 0.32, dir.y);
-          sky = mix(sky, vec3(0.86, 0.93, 1.0), wispMask * 0.28);
+          vec3 wispCol = mix(vec3(0.45, 0.52, 0.62), vec3(0.86, 0.93, 1.0), uSunStrength);
+          sky = mix(sky, wispCol, wispMask * 0.28);
         }
 
-        // Solar atmospheric scattering halo + crisp sun disc
+        // Solar atmospheric scattering halo + crisp sun disc (scaled by clear-sky strength)
         float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
-        sky += vec3(1.0, 0.92, 0.72) * pow(sunDot, 7.0) * 0.24;
-        sky += vec3(1.0, 0.96, 0.86) * pow(sunDot, 48.0) * 0.45;
-        sky += vec3(1.0, 0.99, 0.94) * smoothstep(0.9982, 0.9995, sunDot) * 1.1;
+        sky += vec3(1.0, 0.92, 0.72) * pow(sunDot, 7.0) * 0.24 * uSunStrength;
+        sky += vec3(1.0, 0.96, 0.86) * pow(sunDot, 48.0) * 0.45 * uSunStrength;
+        sky += vec3(1.0, 0.99, 0.94) * smoothstep(0.9982, 0.9995, sunDot) * 1.1 * uSunStrength;
+
+        // Storm lightning sky illumination
+        sky += vec3(0.76, 0.85, 1.0) * uLightning * (0.38 + 0.62 * h);
 
         vec3 tunnelCol = vec3(0.051, 0.059, 0.071);
         gl_FragColor = vec4(mix(tunnelCol, sky, uSkyFade), 1.0);
@@ -212,6 +223,8 @@ function createMediterraneanClouds(scene: THREE.Scene, sunDir: THREE.Vector3) {
     uniforms: {
       uSunDir: { value: sunDir.clone().normalize() },
       uOpacity: { value: 0.95 },
+      uDarken: { value: 0.0 },
+      uLightning: { value: 0.0 },
     },
     vertexShader: `
       attribute float aLocalY;
@@ -229,6 +242,8 @@ function createMediterraneanClouds(scene: THREE.Scene, sunDir: THREE.Vector3) {
     fragmentShader: `
       uniform vec3 uSunDir;
       uniform float uOpacity;
+      uniform float uDarken;
+      uniform float uLightning;
       varying vec3 vWorldNormal;
       varying vec3 vWorldPos;
       varying float vHeight;
@@ -238,20 +253,20 @@ function createMediterraneanClouds(scene: THREE.Scene, sunDir: THREE.Vector3) {
         float ndv = abs(dot(N, V));
         float softEdge = smoothstep(0.06, 0.54, ndv);
 
-        // High-contrast sunlit silver-gold tops vs. dramatic moody slate-blue/lavender bases
         float sunLit = clamp(dot(N, uSunDir) * 0.5 + 0.5, 0.0, 1.0);
         float topFactor = smoothstep(0.08, 0.86, vHeight);
         float contrastMix = smoothstep(0.18, 0.84, topFactor * 0.62 + sunLit * 0.38);
 
-        float silverGoldRim = pow(max(dot(-V, uSunDir), 0.0), 5.0) * (1.0 - ndv) * 0.48;
+        float silverGoldRim = pow(max(dot(-V, uSunDir), 0.0), 5.0) * (1.0 - ndv) * 0.48 * (1.0 - uDarken * 0.85);
 
-        vec3 baseShadowCol = vec3(0.35, 0.42, 0.60);  // moody slate-blue / lavender base
-        vec3 midCloudCol   = vec3(0.76, 0.82, 0.92);
-        vec3 sunlitPeakCol = vec3(1.00, 0.965, 0.88); // bright sunlit silver-gold top
+        vec3 baseShadowCol = mix(vec3(0.35, 0.42, 0.60), vec3(0.12, 0.16, 0.22), uDarken);
+        vec3 midCloudCol   = mix(vec3(0.76, 0.82, 0.92), vec3(0.24, 0.30, 0.38), uDarken);
+        vec3 sunlitPeakCol = mix(vec3(1.00, 0.965, 0.88), vec3(0.36, 0.43, 0.52), uDarken);
 
         vec3 col = mix(baseShadowCol, midCloudCol, smoothstep(0.0, 0.58, contrastMix));
         col = mix(col, sunlitPeakCol, smoothstep(0.45, 0.96, contrastMix));
         col += vec3(1.0, 0.94, 0.78) * silverGoldRim;
+        col += vec3(0.74, 0.84, 1.0) * uLightning * (0.45 + 0.55 * topFactor);
 
         gl_FragColor = vec4(col, softEdge * uOpacity);
       }
@@ -259,7 +274,6 @@ function createMediterraneanClouds(scene: THREE.Scene, sunDir: THREE.Vector3) {
   });
 
   const prototypes = [
-    // Towering sculpted cumulus formation
     buildCloudClusterGeometry([
       { x: 0, y: 2, z: 0, rx: 26, ry: 13, rz: 17 },
       { x: -18, y: 0, z: 3, rx: 17, ry: 10, rz: 13 },
@@ -271,7 +285,6 @@ function createMediterraneanClouds(scene: THREE.Scene, sunDir: THREE.Vector3) {
       { x: 31, y: -1.5, z: 2, rx: 13, ry: 7.5, rz: 10 },
       { x: -2, y: -1.5, z: 12, rx: 14, ry: 7.5, rz: 9 },
     ]),
-    // Broad dramatic stratocumulus shelf + rising crown
     buildCloudClusterGeometry([
       { x: 0, y: 3, z: 0, rx: 30, ry: 13.5, rz: 18 },
       { x: -22, y: 1, z: -3, rx: 18, ry: 10, rz: 13 },
@@ -283,7 +296,6 @@ function createMediterraneanClouds(scene: THREE.Scene, sunDir: THREE.Vector3) {
       { x: 35, y: -2, z: -1, rx: 13, ry: 6.8, rz: 9.5 },
       { x: 6, y: 20, z: 0, rx: 10, ry: 8.5, rz: 8.5 },
     ]),
-    // Compact high-contrast Mediterranean puff cluster
     buildCloudClusterGeometry([
       { x: 0, y: 1.5, z: 0, rx: 21, ry: 11.5, rz: 15 },
       { x: -15, y: 0, z: 2, rx: 14, ry: 8.8, rz: 11.5 },
@@ -315,6 +327,14 @@ function createMediterraneanClouds(scene: THREE.Scene, sunDir: THREE.Vector3) {
   return { clouds, cloudMat };
 }
 
+export type WeatherType = 'cerah' | 'hujan' | 'kabut';
+
+export interface EngineController {
+  startRace: (weather: WeatherType) => void;
+  setWeather: (weather: WeatherType) => void;
+  restartWithWeather: (weather: WeatherType) => void;
+}
+
 export interface RaceFinishResult {
   playerPosition: number;
   bestLapTime: number | null;
@@ -324,10 +344,184 @@ export interface RaceFinishResult {
 }
 
 export interface EngineCallbacks {
+  initialWeather?: WeatherType;
   onWebGLError?: (msg: string) => void;
   onRaceFinish?: (result: RaceFinishResult | null) => void;
   onChequeredCountdown?: (secondsRemaining: number | null) => void;
+  onReady?: (controller: EngineController) => void;
 }
+
+interface WeatherPreset {
+  grip: number;
+  brake: number;
+  traction: number;
+  rainIntensity: number;
+  rainCount: number;
+  rainSpeed: number;
+  rainLen: number;
+  rainOpacity: number;
+  rainColor: number;
+  sprayRate: number;
+  fogMode: 'linear' | 'exp2';
+  fogColor: number;
+  fogNear: number;
+  fogFar: number;
+  fogDensity: number;
+  skyHorizon: number;
+  skyMid: number;
+  skyZenith: number;
+  skySea: number;
+  sunStrength: number;
+  cloudDarken: number;
+  cloudOpacity: number;
+  ambientColor: number;
+  ambientInt: number;
+  hemiSky: number;
+  hemiGround: number;
+  hemiInt: number;
+  sunColor: number;
+  sunInt: number;
+  envInt: number;
+  exposure: number;
+  bloomStrength: number;
+  asphaltColor: number;
+  asphaltRoughness: number;
+  asphaltMetalness: number;
+  asphaltBump: number;
+  asphaltEnv: number;
+  curbRoughness: number;
+  curbMetalness: number;
+  curbEnv: number;
+}
+
+const WEATHER_PRESETS: Record<WeatherType, WeatherPreset> = {
+  cerah: {
+    grip: 1.0,
+    brake: 1.0,
+    traction: 1.0,
+    rainIntensity: 0,
+    rainCount: 0,
+    rainSpeed: 30,
+    rainLen: 1.2,
+    rainOpacity: 0,
+    rainColor: 0xcbe3ff,
+    sprayRate: 0,
+    fogMode: 'linear',
+    fogColor: 0x4da6ff,
+    fogNear: 180,
+    fogFar: 950,
+    fogDensity: 0,
+    skyHorizon: 0x4da6ff,
+    skyMid: 0x256fc8,
+    skyZenith: 0x1a4b8c,
+    skySea: 0x2e70b8,
+    sunStrength: 1.0,
+    cloudDarken: 0.0,
+    cloudOpacity: 0.95,
+    ambientColor: 0xffffff,
+    ambientInt: 0.58,
+    hemiSky: 0x4da6ff,
+    hemiGround: 0x2b3329,
+    hemiInt: 0.28,
+    sunColor: 0xfff4dc,
+    sunInt: 1.22,
+    envInt: 0.35,
+    exposure: 0.92,
+    bloomStrength: 0.22,
+    asphaltColor: 0xffffff,
+    asphaltRoughness: 0.78,
+    asphaltMetalness: 0.05,
+    asphaltBump: 0.04,
+    asphaltEnv: 0.7,
+    curbRoughness: 0.65,
+    curbMetalness: 0.04,
+    curbEnv: 0.65,
+  },
+  hujan: {
+    grip: 0.72,
+    brake: 0.75,
+    traction: 0.80,
+    rainIntensity: 1.0,
+    rainCount: 1500,
+    rainSpeed: 35,
+    rainLen: 1.5,
+    rainOpacity: 0.44,
+    rainColor: 0xc4d9f2,
+    sprayRate: 1.0,
+    fogMode: 'exp2',
+    fogColor: 0x243140,
+    fogNear: 90,
+    fogFar: 550,
+    fogDensity: 0.0045,
+    skyHorizon: 0x334155,
+    skyMid: 0x222c3a,
+    skyZenith: 0x151d28,
+    skySea: 0x18222e,
+    sunStrength: 0.08,
+    cloudDarken: 0.74,
+    cloudOpacity: 0.98,
+    ambientColor: 0x99b1cc,
+    ambientInt: 0.48,
+    hemiSky: 0x475569,
+    hemiGround: 0x18202c,
+    hemiInt: 0.30,
+    sunColor: 0xa6bfd9,
+    sunInt: 0.42,
+    envInt: 0.54,
+    exposure: 0.88,
+    bloomStrength: 0.30,
+    asphaltColor: 0x8b95a4,
+    asphaltRoughness: 0.22,
+    asphaltMetalness: 0.25,
+    asphaltBump: 0.018,
+    asphaltEnv: 1.85,
+    curbRoughness: 0.26,
+    curbMetalness: 0.16,
+    curbEnv: 1.4,
+  },
+  kabut: {
+    grip: 0.86,
+    brake: 0.88,
+    traction: 0.91,
+    rainIntensity: 0.32,
+    rainCount: 520,
+    rainSpeed: 17,
+    rainLen: 0.55,
+    rainOpacity: 0.26,
+    rainColor: 0xd8e4f0,
+    sprayRate: 0.38,
+    fogMode: 'exp2',
+    fogColor: 0xb8c7d4,
+    fogNear: 40,
+    fogFar: 220,
+    fogDensity: 0.0155,
+    skyHorizon: 0xb8c7d4,
+    skyMid: 0x9ab0c2,
+    skyZenith: 0x7b92a6,
+    skySea: 0x94a8b9,
+    sunStrength: 0.14,
+    cloudDarken: 0.24,
+    cloudOpacity: 0.65,
+    ambientColor: 0xdce7f2,
+    ambientInt: 0.62,
+    hemiSky: 0xb8c7d4,
+    hemiGround: 0x52606d,
+    hemiInt: 0.34,
+    sunColor: 0xdce6f2,
+    sunInt: 0.50,
+    envInt: 0.32,
+    exposure: 0.90,
+    bloomStrength: 0.20,
+    asphaltColor: 0xc2ccd6,
+    asphaltRoughness: 0.44,
+    asphaltMetalness: 0.14,
+    asphaltBump: 0.028,
+    asphaltEnv: 1.2,
+    curbRoughness: 0.42,
+    curbMetalness: 0.10,
+    curbEnv: 1.0,
+  },
+};
 
 export function startMonacoEngine(
   canvas: HTMLCanvasElement,
@@ -355,12 +549,15 @@ export function startMonacoEngine(
   renderer.shadowMap.enabled = !isSoftwareGl;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-  // --- Scene & Clear Mediterranean Atmosphere ---
+  // --- Scene & Dynamic Weather Atmosphere ---
   const scene = new THREE.Scene();
-  const DAY_SKY = new THREE.Color(0x4da6ff);
   const TUNNEL_FOG = new THREE.Color(0x0d0f12);
-  scene.background = DAY_SKY.clone();
-  scene.fog = new THREE.Fog(DAY_SKY.getHex(), 180, 950);
+  const SKY_TARGET = new THREE.Color(0x4da6ff);
+  const LIGHTNING_COL = new THREE.Color(0xbcd6ff);
+  const linearFog = new THREE.Fog(0x4da6ff, 180, 950);
+  const expFog = new THREE.FogExp2(0x243140, 0.0045);
+  scene.background = SKY_TARGET.clone();
+  scene.fog = linearFog;
 
   const camera = new THREE.PerspectiveCamera(
     72,
@@ -421,9 +618,177 @@ export function startMonacoEngine(
   const trackUserData = trackData.trackCurve.userData as any;
   const waterMat = trackUserData.waterMaterial;
   waterMat.uniforms.uSunDir.value.copy(sunDir);
+  const asphaltMaterial = trackUserData.asphaltMaterial as THREE.MeshStandardMaterial | undefined;
+  const curbMaterial = trackUserData.curbMaterial as THREE.MeshStandardMaterial | undefined;
   const tunnel = trackUserData.tunnel;
   const envTime = trackUserData.envTime;
   const trackPlayerPos = trackUserData.playerPos;
+
+  // --- Pooled 60 FPS 3D Rain / Drizzle Streaks (THREE.LineSegments) ---
+  const MAX_RAIN = 1500;
+  const RAIN_BOX_XZ = 76;
+  const RAIN_BOX_Y = 34;
+  const RAIN_HALF_XZ = RAIN_BOX_XZ * 0.5;
+  const rainOffsets = new Float32Array(MAX_RAIN * 3);
+  const rainSeeds = new Float32Array(MAX_RAIN);
+  const rainPositions = new Float32Array(MAX_RAIN * 2 * 3);
+  for (let i = 0; i < MAX_RAIN; i++) {
+    rainOffsets[i * 3 + 0] = (Math.random() - 0.5) * RAIN_BOX_XZ;
+    rainOffsets[i * 3 + 1] = Math.random() * RAIN_BOX_Y - 6;
+    rainOffsets[i * 3 + 2] = (Math.random() - 0.5) * RAIN_BOX_XZ;
+    rainSeeds[i] = 0.82 + Math.random() * 0.36;
+  }
+  const rainGeo = new THREE.BufferGeometry();
+  const rainPosAttr = new THREE.BufferAttribute(rainPositions, 3);
+  rainPosAttr.setUsage(THREE.DynamicDrawUsage);
+  rainGeo.setAttribute('position', rainPosAttr);
+  rainGeo.setDrawRange(0, 0);
+  const rainMat = new THREE.LineBasicMaterial({
+    color: 0xc4d9f2,
+    transparent: true,
+    opacity: 0.44,
+    depthWrite: false,
+  });
+  const rainLines = new THREE.LineSegments(rainGeo, rainMat);
+  rainLines.frustumCulled = false;
+  rainLines.visible = false;
+  scene.add(rainLines);
+
+  // --- Pooled 60 FPS Tire Water Spray Rooster Plumes (InstancedMesh) ---
+  const SPRAY_COUNT = 180;
+  const sprayGeo = new THREE.IcosahedronGeometry(0.18, 0);
+  const sprayMat = new THREE.MeshBasicMaterial({
+    color: 0xe6eff8,
+    transparent: true,
+    opacity: 0.34,
+    depthWrite: false,
+  });
+  const sprayMesh = new THREE.InstancedMesh(sprayGeo, sprayMat, SPRAY_COUNT);
+  sprayMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  sprayMesh.frustumCulled = false;
+  sprayMesh.visible = false;
+  scene.add(sprayMesh);
+
+  interface SprayDrop {
+    x: number;
+    y: number;
+    z: number;
+    vx: number;
+    vy: number;
+    vz: number;
+    age: number;
+    life: number;
+    baseScale: number;
+    active: boolean;
+  }
+  const sprayPool: SprayDrop[] = [];
+  const sprayDummy = new THREE.Object3D();
+  sprayDummy.scale.setScalar(0);
+  sprayDummy.updateMatrix();
+  for (let i = 0; i < SPRAY_COUNT; i++) {
+    sprayMesh.setMatrixAt(i, sprayDummy.matrix);
+    sprayPool.push({
+      x: 0,
+      y: 0,
+      z: 0,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      age: 0,
+      life: 0.35,
+      baseScale: 0.6,
+      active: false,
+    });
+  }
+  sprayMesh.instanceMatrix.needsUpdate = true;
+  let sprayNext = 0;
+  let sprayAcc = 0;
+
+  let currentWeather: WeatherType = callbacks.initialWeather ?? 'cerah';
+  let activePreset: WeatherPreset = WEATHER_PRESETS[currentWeather];
+  let waitingToStart = true;
+  let tunnelMix = 0;
+  let lightningTimer = 6 + Math.random() * 6;
+  let lightningAge = -1;
+
+  function applyWeatherPreset(w: WeatherType) {
+    currentWeather = w;
+    activePreset = WEATHER_PRESETS[w];
+    (trackData as any).weather = w;
+    (trackData as any).weatherGrip = activePreset.grip;
+    (trackData as any).weatherBrake = activePreset.brake;
+    (trackData as any).weatherTraction = activePreset.traction;
+
+    if (asphaltMaterial) {
+      asphaltMaterial.color.setHex(activePreset.asphaltColor);
+      asphaltMaterial.roughness = activePreset.asphaltRoughness;
+      asphaltMaterial.metalness = activePreset.asphaltMetalness;
+      asphaltMaterial.bumpScale = activePreset.asphaltBump;
+      asphaltMaterial.envMapIntensity = activePreset.asphaltEnv;
+    }
+    if (curbMaterial) {
+      curbMaterial.roughness = activePreset.curbRoughness;
+      curbMaterial.metalness = activePreset.curbMetalness;
+      curbMaterial.envMapIntensity = activePreset.curbEnv;
+    }
+
+    skyDomeMat.uniforms.uHorizonCol.value.setHex(activePreset.skyHorizon);
+    skyDomeMat.uniforms.uMidCol.value.setHex(activePreset.skyMid);
+    skyDomeMat.uniforms.uZenithCol.value.setHex(activePreset.skyZenith);
+    skyDomeMat.uniforms.uSeaCol.value.setHex(activePreset.skySea);
+    skyDomeMat.uniforms.uSunStrength.value = activePreset.sunStrength;
+    skyDomeMat.uniforms.uLightning.value = 0;
+
+    cloudMat.uniforms.uDarken.value = activePreset.cloudDarken;
+    cloudMat.uniforms.uLightning.value = 0;
+
+    ambient.color.setHex(activePreset.ambientColor);
+    ambient.intensity = activePreset.ambientInt;
+    hemi.color.setHex(activePreset.hemiSky);
+    hemi.groundColor.setHex(activePreset.hemiGround);
+    hemi.intensity = activePreset.hemiInt;
+    sun.color.setHex(activePreset.sunColor);
+    sun.intensity = activePreset.sunInt;
+    scene.environmentIntensity = activePreset.envInt;
+
+    rainMat.color.setHex(activePreset.rainColor);
+    rainMat.opacity = activePreset.rainOpacity;
+    if (activePreset.rainCount <= 0) {
+      rainLines.visible = false;
+      rainGeo.setDrawRange(0, 0);
+    }
+
+    if (activePreset.sprayRate <= 0) {
+      sprayMesh.visible = false;
+      for (let i = 0; i < SPRAY_COUNT; i++) {
+        sprayPool[i].active = false;
+        sprayDummy.scale.setScalar(0);
+        sprayDummy.updateMatrix();
+        sprayMesh.setMatrixAt(i, sprayDummy.matrix);
+      }
+      sprayMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    SKY_TARGET.setHex(activePreset.fogColor);
+    if (activePreset.fogMode === 'linear') {
+      linearFog.color.copy(SKY_TARGET);
+      linearFog.near = activePreset.fogNear;
+      linearFog.far = activePreset.fogFar;
+      scene.fog = linearFog;
+    } else {
+      expFog.color.copy(SKY_TARGET);
+      expFog.density = activePreset.fogDensity;
+      scene.fog = expFog;
+    }
+    if (scene.background instanceof THREE.Color) {
+      scene.background.copy(SKY_TARGET);
+    }
+
+    lightningAge = -1;
+    lightningTimer = 7 + Math.random() * 8;
+  }
+
+  applyWeatherPreset(currentWeather);
 
   // --- Post-processing (GPU only; high threshold so only emissives bloom) ---
   let composer: EffectComposer | null = null;
@@ -467,6 +832,7 @@ export function startMonacoEngine(
     ) {
       return;
     }
+    if (waitingToStart) return;
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
       e.preventDefault();
     }
@@ -618,6 +984,7 @@ export function startMonacoEngine(
   function resetParticles() {
     smokeAcc = 0;
     sparkAcc = 0;
+    sprayAcc = 0;
     contactSparkCooldown = 0;
     for (const s of smokePool) {
       s.active = false;
@@ -627,6 +994,176 @@ export function startMonacoEngine(
       sp.active = false;
       sp.mesh.visible = false;
     }
+    for (let i = 0; i < SPRAY_COUNT; i++) {
+      sprayPool[i].active = false;
+      sprayDummy.scale.setScalar(0);
+      sprayDummy.updateMatrix();
+      sprayMesh.setMatrixAt(i, sprayDummy.matrix);
+    }
+    sprayMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  function updateWeatherEffects(dt: number, inTunnel: boolean) {
+    // 1. Dynamic Lightning & Thunder (Hujan Lebat)
+    let flash = 0;
+    if (currentWeather === 'hujan') {
+      if (lightningAge >= 0) {
+        lightningAge += dt;
+        if (lightningAge < 0.07) {
+          flash = 1.0;
+        } else if (lightningAge < 0.14) {
+          flash = 0.18;
+        } else if (lightningAge < 0.22) {
+          flash = 0.82;
+        } else if (lightningAge < 0.56) {
+          flash = Math.max(0, (1 - (lightningAge - 0.22) / 0.34) * 0.65);
+        } else {
+          lightningAge = -1;
+        }
+      } else {
+        lightningTimer -= dt;
+        if (lightningTimer <= 0) {
+          lightningAge = 0;
+          lightningTimer = 8 + Math.random() * 8;
+          flash = 1.0;
+          if (!waitingToStart) {
+            playThunderSound(0.85 + Math.random() * 0.35);
+          }
+        }
+      }
+    } else {
+      lightningAge = -1;
+    }
+
+    const skyFlash = inTunnel ? flash * 0.12 : flash;
+    skyDomeMat.uniforms.uLightning.value = skyFlash;
+    cloudMat.uniforms.uLightning.value = skyFlash;
+    sun.intensity = activePreset.sunInt + flash * (inTunnel ? 0.2 : 2.6);
+    ambient.intensity = activePreset.ambientInt + flash * (inTunnel ? 0.1 : 0.95);
+
+    // 2. 3D Camera-Wrapped Diagonal Rain / Drizzle Streaks
+    const rainCount = activePreset.rainCount;
+    if (rainCount <= 0 || inTunnel) {
+      rainLines.visible = false;
+    } else {
+      rainLines.visible = true;
+      rainGeo.setDrawRange(0, rainCount * 2);
+      const camX = camera.position.x;
+      const camY = camera.position.y;
+      const camZ = camera.position.z;
+      const fallVy = activePreset.rainSpeed;
+      const slantX = currentWeather === 'hujan' ? -fallVy * 0.14 : -fallVy * 0.06;
+      const slantZ = currentWeather === 'hujan' ? -fallVy * 0.05 : -fallVy * 0.03;
+      const len = activePreset.rainLen;
+      const dxStreak = (slantX / fallVy) * len;
+      const dzStreak = (slantZ / fallVy) * len;
+
+      for (let i = 0; i < rainCount; i++) {
+        const idx3 = i * 3;
+        const seed = rainSeeds[i];
+        let ox = rainOffsets[idx3] + slantX * dt * seed;
+        let oy = rainOffsets[idx3 + 1] - fallVy * dt * seed;
+        let oz = rainOffsets[idx3 + 2] + slantZ * dt * seed;
+
+        // Wrap within box relative to camera
+        if (oy < -6) oy += RAIN_BOX_Y;
+        else if (oy > RAIN_BOX_Y - 6) oy -= RAIN_BOX_Y;
+
+        let wx = camX + ox;
+        let wz = camZ + oz;
+        if (ox < -RAIN_HALF_XZ) ox += RAIN_BOX_XZ;
+        else if (ox > RAIN_HALF_XZ) ox -= RAIN_BOX_XZ;
+        if (oz < -RAIN_HALF_XZ) oz += RAIN_BOX_XZ;
+        else if (oz > RAIN_HALF_XZ) oz -= RAIN_BOX_XZ;
+
+        rainOffsets[idx3] = ox;
+        rainOffsets[idx3 + 1] = oy;
+        rainOffsets[idx3 + 2] = oz;
+
+        wx = camX + ox;
+        const wy = camY + oy;
+        wz = camZ + oz;
+
+        const base6 = i * 6;
+        rainPositions[base6] = wx;
+        rainPositions[base6 + 1] = wy;
+        rainPositions[base6 + 2] = wz;
+        rainPositions[base6 + 3] = wx - dxStreak * seed;
+        rainPositions[base6 + 4] = wy + len * seed;
+        rainPositions[base6 + 5] = wz - dzStreak * seed;
+      }
+      rainPosAttr.needsUpdate = true;
+    }
+
+    // 3. Instanced Rear-Tire Water Spray Roosters for All Moving Cars
+    const sprayRate = activePreset.sprayRate;
+    let hasActiveSpray = false;
+    if (sprayRate > 0 && !waitingToStart) {
+      const interval = currentWeather === 'hujan' ? 0.022 : 0.048;
+      sprayAcc += dt;
+      while (sprayAcc >= interval) {
+        sprayAcc -= interval;
+        for (const car of allCars) {
+          const cp = car.userData.physics;
+          if (!cp || cp.speed < 11.1) continue; // > 40 km/h
+          if (cp.u >= tunnel.uStart && cp.u <= tunnel.uEnd) continue;
+          const yaw = cp.yaw;
+          const fx = -Math.sin(yaw);
+          const fz = -Math.cos(yaw);
+          const rx = Math.cos(yaw);
+          const rz = -Math.sin(yaw);
+          const speedScale = Math.min(1, (cp.speed - 10) / 55);
+
+          for (const side of [-1, 1]) {
+            const drop = sprayPool[sprayNext];
+            sprayNext = (sprayNext + 1) % SPRAY_COUNT;
+            // Rear wheel local offset: (±0.88, 0.25, 1.72) -> world: car.pos - fwd*1.72 + right*(side*0.88)
+            drop.x = car.position.x - fx * 1.72 + rx * (side * 0.86) + (Math.random() - 0.5) * 0.16;
+            drop.y = car.position.y + 0.24 + Math.random() * 0.12;
+            drop.z = car.position.z - fz * 1.72 + rz * (side * 0.86) + (Math.random() - 0.5) * 0.16;
+            drop.vx = -fx * (2.5 + cp.speed * 0.12) + rx * (side * (0.6 + Math.random() * 1.1));
+            drop.vy = (1.6 + speedScale * 2.8) * sprayRate;
+            drop.vz = -fz * (2.5 + cp.speed * 0.12) + rz * (side * (0.6 + Math.random() * 1.1));
+            drop.age = 0;
+            drop.life = currentWeather === 'hujan' ? 0.36 + Math.random() * 0.12 : 0.24 + Math.random() * 0.08;
+            drop.baseScale = (0.55 + speedScale * 0.95) * (0.5 + sprayRate * 0.5);
+            drop.active = true;
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < SPRAY_COUNT; i++) {
+      const d = sprayPool[i];
+      if (!d.active) continue;
+      d.age += dt;
+      if (d.age >= d.life) {
+        d.active = false;
+        sprayDummy.scale.setScalar(0);
+        sprayDummy.updateMatrix();
+        sprayMesh.setMatrixAt(i, sprayDummy.matrix);
+        continue;
+      }
+      hasActiveSpray = true;
+      const f = d.age / d.life;
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+      d.z += d.vz * dt;
+      d.vy -= 4.2 * dt;
+      const sc = d.baseScale * (0.5 + f * 1.65) * (1 - f * 0.65);
+      sprayDummy.position.set(d.x, d.y, d.z);
+      sprayDummy.scale.setScalar(Math.max(0.01, sc));
+      sprayDummy.updateMatrix();
+      sprayMesh.setMatrixAt(i, sprayDummy.matrix);
+    }
+    if (hasActiveSpray || sprayRate > 0) {
+      sprayMesh.visible = true;
+      sprayMesh.instanceMatrix.needsUpdate = true;
+    } else {
+      sprayMesh.visible = false;
+    }
+
+    return flash;
   }
 
   function updateDamageParticles(dt: number, health: number, speedMs: number) {
@@ -871,6 +1408,22 @@ export function startMonacoEngine(
     }
   }
 
+  callbacks.onReady?.({
+    setWeather: (w: WeatherType) => {
+      applyWeatherPreset(w);
+    },
+    startRace: (w: WeatherType) => {
+      applyWeatherPreset(w);
+      waitingToStart = false;
+      fullRestartRace();
+    },
+    restartWithWeather: (w: WeatherType) => {
+      applyWeatherPreset(w);
+      waitingToStart = false;
+      fullRestartRace();
+    },
+  });
+
   function afterDraw(cb: () => void) {
     const gl = renderer.getContext() as WebGL2RenderingContext;
     const sync = gl.fenceSync ? gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) : null;
@@ -904,119 +1457,125 @@ export function startMonacoEngine(
     buildControls(dt);
 
     const playerP = playerCar.userData.physics;
-    if (controls.reset && (raceState?.isFinished || forcedFinish || playerP.health <= 0)) {
+    if (!waitingToStart && controls.reset && (raceState?.isFinished || forcedFinish || playerP.health <= 0)) {
       fullRestartRace();
       controls.reset = false;
     }
 
     const FROZEN_CONTROLS = { throttle: 0, brake: 1, steer: 0, drs: false, reset: false };
     const playerControls =
-      raceState?.phase === 'LIGHTS' || playerP.health <= 0 || forcedFinish
+      waitingToStart || raceState?.phase === 'LIGHTS' || playerP.health <= 0 || forcedFinish
         ? FROZEN_CONTROLS
         : controls;
 
-    accumulator += dt;
-    let steps = 0;
-    while (accumulator >= STEP && steps < MAX_SUBSTEPS) {
-      wallHitAudioCooldown = Math.max(0, wallHitAudioCooldown - STEP);
-      aiHitAudioCooldown = Math.max(0, aiHitAudioCooldown - STEP);
-      contactSparkCooldown = Math.max(0, contactSparkCooldown - STEP);
+    if (waitingToStart) {
+      carState = updateCarPhysics(playerCar, FROZEN_CONTROLS, trackData, 0);
+      raceState = updateAIRacers(aiList, allCars, trackData, 0, true);
+      accumulator = 0;
+    } else {
+      accumulator += dt;
+      let steps = 0;
+      while (accumulator >= STEP && steps < MAX_SUBSTEPS) {
+        wallHitAudioCooldown = Math.max(0, wallHitAudioCooldown - STEP);
+        aiHitAudioCooldown = Math.max(0, aiHitAudioCooldown - STEP);
+        contactSparkCooldown = Math.max(0, contactSparkCooldown - STEP);
 
-      const stepControls =
-        raceState?.phase === 'LIGHTS' || playerP.health <= 0 || forcedFinish
-          ? FROZEN_CONTROLS
-          : controls;
+        const stepControls =
+          raceState?.phase === 'LIGHTS' || playerP.health <= 0 || forcedFinish
+            ? FROZEN_CONTROLS
+            : controls;
 
-      const hitBeforeWall = playerP.hit;
-      const speedBeforeWall = playerP.speed;
-      carState = updateCarPhysics(playerCar, stepControls, trackData, STEP);
-      if (playerP.hit > hitBeforeWall + 0.04 && wallHitAudioCooldown <= 0) {
-        const wallIntensity = Math.min(1, Math.max(0.2, Math.max(playerP.hit, speedBeforeWall / 75)));
-        playCollisionSound(wallIntensity, true);
-        wallHitAudioCooldown = 0.24;
-      }
+        const hitBeforeWall = playerP.hit;
+        const speedBeforeWall = playerP.speed;
+        carState = updateCarPhysics(playerCar, stepControls, trackData, STEP);
+        if (playerP.hit > hitBeforeWall + 0.04 && wallHitAudioCooldown <= 0) {
+          const wallIntensity = Math.min(1, Math.max(0.2, Math.max(playerP.hit, speedBeforeWall / 75)));
+          playCollisionSound(wallIntensity, true);
+          wallHitAudioCooldown = 0.24;
+        }
 
-      raceState = updateAIRacers(aiList, allCars, trackData, STEP);
+        raceState = updateAIRacers(aiList, allCars, trackData, STEP, false);
 
-      // Post-leader Chequered Flag 15s finish countdown / all-AI-finished check
-      if (raceState && !raceState.isFinished && !forcedFinish && playerP.health > 0 && raceState.phase === 'RACING') {
-        if (raceState.finishedCount >= 1) {
-          if (chequeredCountdown === null) {
-            chequeredCountdown = 15.0;
-          } else {
-            chequeredCountdown = Math.max(0, chequeredCountdown - STEP);
+        // Post-leader Chequered Flag 15s finish countdown / all-AI-finished check
+        if (raceState && !raceState.isFinished && !forcedFinish && playerP.health > 0 && raceState.phase === 'RACING') {
+          if (raceState.finishedCount >= 1) {
+            if (chequeredCountdown === null) {
+              chequeredCountdown = 15.0;
+            } else {
+              chequeredCountdown = Math.max(0, chequeredCountdown - STEP);
+            }
+            if (chequeredCountdown <= 0 || raceState.finishedCount >= aiList.length) {
+              forcedFinish = true;
+              chequeredCountdown = null;
+              const standingsCopy = Array.isArray(raceState.standings)
+                ? raceState.standings.map((e: any) =>
+                    e.isPlayer ? { ...e, finished: true } : { ...e }
+                  )
+                : [];
+              const pEntry = standingsCopy.find((e: any) => e.isPlayer);
+              const pos = raceState.playerPosition || pEntry?.position || standingsCopy.length || 8;
+              const gapText = pEntry?.gapText || '+1 LAP';
+              forcedFinishState = {
+                playerPosition: pos,
+                gapText,
+                bestLapTime: raceState.bestLapTime ?? pEntry?.bestLapTime ?? null,
+                totalRaceTime: raceState.raceTime ?? 0,
+                standings: standingsCopy,
+              };
+            }
           }
-          if (chequeredCountdown <= 0 || raceState.finishedCount >= aiList.length) {
-            forcedFinish = true;
-            chequeredCountdown = null;
-            const standingsCopy = Array.isArray(raceState.standings)
-              ? raceState.standings.map((e: any) =>
-                  e.isPlayer ? { ...e, finished: true } : { ...e }
-                )
-              : [];
-            const pEntry = standingsCopy.find((e: any) => e.isPlayer);
-            const pos = raceState.playerPosition || pEntry?.position || standingsCopy.length || 8;
-            const gapText = pEntry?.gapText || '+1 LAP';
-            forcedFinishState = {
-              playerPosition: pos,
-              gapText,
-              bestLapTime: raceState.bestLapTime ?? pEntry?.bestLapTime ?? null,
-              totalRaceTime: raceState.raceTime ?? 0,
-              standings: standingsCopy,
-            };
+        } else if (raceState?.isFinished || playerP.health <= 0) {
+          chequeredCountdown = null;
+        }
+
+        // Process solid OBB car-to-car collision events (audio, damage, micro-shake, sparks)
+        if (!forcedFinish && raceState?.phase === 'RACING' && Array.isArray(raceState.collisionEvents)) {
+          for (const ev of raceState.collisionEvents) {
+            if (ev.isPlayerInvolved && playerP.health > 0) {
+              if (aiHitAudioCooldown <= 0 && ev.closingSpeed > 2.6) {
+                const carIntensity = Math.min(1, Math.max(0.22, ev.closingSpeed / 36));
+                playCollisionSound(carIntensity, false);
+                aiHitAudioCooldown = 0.24;
+              }
+              if (ev.closingSpeed > 4.0) {
+                playerP.hit = Math.max(playerP.hit, Math.min(0.85, ev.closingSpeed / 34));
+              }
+              const impactSpeed = Math.max(ev.closingSpeed + 3, ev.closingSpeed * 1.15);
+              if (impactSpeed > 15 && playerP.damageCooldown <= 0) {
+                applyCarDamage(playerCar, impactSpeed);
+              }
+            }
+
+            if (ev.closingSpeed > 4.5) {
+              spawnContactSparks(
+                ev.contactX,
+                ev.contactY,
+                ev.contactZ,
+                ev.tangentX,
+                ev.tangentZ,
+                Math.max(ev.closingSpeed, ev.tangentSpeed, 10),
+                ev.isPlayerInvolved ? 7 : 4
+              );
+            } else if (ev.isScrape && contactSparkCooldown <= 0) {
+              spawnContactSparks(
+                ev.contactX,
+                ev.contactY,
+                ev.contactZ,
+                ev.tangentX,
+                ev.tangentZ,
+                Math.max(ev.tangentSpeed, 9),
+                ev.isPlayerInvolved ? 3 : 2
+              );
+              contactSparkCooldown = 0.032;
+            }
           }
         }
-      } else if (raceState?.isFinished || playerP.health <= 0) {
-        chequeredCountdown = null;
+
+        accumulator -= STEP;
+        steps++;
       }
-
-      // Process solid OBB car-to-car collision events (audio, damage, micro-shake, sparks)
-      if (!forcedFinish && raceState?.phase === 'RACING' && Array.isArray(raceState.collisionEvents)) {
-        for (const ev of raceState.collisionEvents) {
-          if (ev.isPlayerInvolved && playerP.health > 0) {
-            if (aiHitAudioCooldown <= 0 && ev.closingSpeed > 2.6) {
-              const carIntensity = Math.min(1, Math.max(0.22, ev.closingSpeed / 36));
-              playCollisionSound(carIntensity, false);
-              aiHitAudioCooldown = 0.24;
-            }
-            if (ev.closingSpeed > 4.0) {
-              playerP.hit = Math.max(playerP.hit, Math.min(0.85, ev.closingSpeed / 34));
-            }
-            const impactSpeed = Math.max(ev.closingSpeed + 3, ev.closingSpeed * 1.15);
-            if (impactSpeed > 15 && playerP.damageCooldown <= 0) {
-              applyCarDamage(playerCar, impactSpeed);
-            }
-          }
-
-          if (ev.closingSpeed > 4.5) {
-            spawnContactSparks(
-              ev.contactX,
-              ev.contactY,
-              ev.contactZ,
-              ev.tangentX,
-              ev.tangentZ,
-              Math.max(ev.closingSpeed, ev.tangentSpeed, 10),
-              ev.isPlayerInvolved ? 7 : 4
-            );
-          } else if (ev.isScrape && contactSparkCooldown <= 0) {
-            spawnContactSparks(
-              ev.contactX,
-              ev.contactY,
-              ev.contactZ,
-              ev.tangentX,
-              ev.tangentZ,
-              Math.max(ev.tangentSpeed, 9),
-              ev.isPlayerInvolved ? 3 : 2
-            );
-            contactSparkCooldown = 0.032;
-          }
-        }
-      }
-
-      accumulator -= STEP;
-      steps++;
+      if (steps === MAX_SUBSTEPS) accumulator = 0;
     }
-    if (steps === MAX_SUBSTEPS) accumulator = 0;
 
     // Opponent proximity & overtake Doppler whoosh detection
     if (!forcedFinish && raceState?.phase === 'RACING' && playerP.health > 0) {
@@ -1105,21 +1664,39 @@ export function startMonacoEngine(
     sun.target.position.copy(playerCar.position);
     sun.target.updateMatrixWorld();
 
-    // Tunnel atmosphere crossfade
+    // Tunnel atmosphere + dynamic weather crossfade + 3D rain / spray / lightning
     const inTunnel = carState.u >= tunnel.uStart && carState.u <= tunnel.uEnd;
-    const k = Math.min(1, 3 * dt);
+    const lightningFlash = updateWeatherEffects(dt, inTunnel);
+    const k = Math.min(1, 3.6 * dt);
+    tunnelMix += ((inTunnel ? 1 : 0) - tunnelMix) * k;
+
+    SKY_TARGET.setHex(activePreset.fogColor);
+    if (lightningFlash > 0.01 && !inTunnel) {
+      SKY_TARGET.lerp(LIGHTNING_COL, Math.min(0.65, lightningFlash * 0.55));
+    }
+
     if (scene.background instanceof THREE.Color) {
-      scene.background.lerp(inTunnel ? TUNNEL_FOG : DAY_SKY, k);
+      scene.background.lerpColors(SKY_TARGET, TUNNEL_FOG, tunnelMix);
     }
     if (scene.fog instanceof THREE.Fog) {
-      scene.fog.color.lerp(inTunnel ? TUNNEL_FOG : DAY_SKY, k);
-      scene.fog.near += ((inTunnel ? 18 : 180) - scene.fog.near) * k;
-      scene.fog.far += ((inTunnel ? 120 : 950) - scene.fog.far) * k;
+      scene.fog.color.lerpColors(SKY_TARGET, TUNNEL_FOG, tunnelMix);
+      scene.fog.near = activePreset.fogNear + (18 - activePreset.fogNear) * tunnelMix;
+      scene.fog.far = activePreset.fogFar + (120 - activePreset.fogFar) * tunnelMix;
+    } else if (scene.fog instanceof THREE.FogExp2) {
+      scene.fog.color.lerpColors(SKY_TARGET, TUNNEL_FOG, tunnelMix);
+      const tunnelExp = 0.013;
+      scene.fog.density = activePreset.fogDensity + (tunnelExp - activePreset.fogDensity) * tunnelMix;
     }
-    renderer.toneMappingExposure += ((inTunnel ? 0.8 : 0.92) - renderer.toneMappingExposure) * k;
-    if (bloom) bloom.strength += ((inTunnel ? 0.5 : 0.22) - bloom.strength) * k;
-    cloudMat.uniforms.uOpacity.value += ((inTunnel ? 0.1 : 0.95) - cloudMat.uniforms.uOpacity.value) * k;
-    skyDomeMat.uniforms.uSkyFade.value += ((inTunnel ? 0.0 : 1.0) - skyDomeMat.uniforms.uSkyFade.value) * k;
+
+    const targetExposure = inTunnel ? 0.80 : activePreset.exposure + lightningFlash * 0.14;
+    renderer.toneMappingExposure += (targetExposure - renderer.toneMappingExposure) * k;
+    if (bloom) {
+      const targetBloom = inTunnel ? 0.50 : activePreset.bloomStrength + lightningFlash * 0.16;
+      bloom.strength += (targetBloom - bloom.strength) * k;
+    }
+    const targetCloudOp = inTunnel ? 0.08 : activePreset.cloudOpacity;
+    cloudMat.uniforms.uOpacity.value += (targetCloudOp - cloudMat.uniforms.uOpacity.value) * k;
+    skyDomeMat.uniforms.uSkyFade.value = 1 - tunnelMix;
     skyDomeMat.uniforms.uTime.value = elapsed;
 
     for (const c of clouds) {
@@ -1147,6 +1724,8 @@ export function startMonacoEngine(
       ...carState,
       throttle: carState.throttle ?? playerControls.throttle,
       brake: carState.brake ?? playerControls.brake,
+      rainIntensity: activePreset.rainIntensity,
+      inTunnel,
     };
     updateAudio(audioCarState);
 
