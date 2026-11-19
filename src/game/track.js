@@ -2499,58 +2499,297 @@ export function buildMonacoTrack(scene) {
     scene.add(bridgeGroup);
   }
 
-  // Monaco Tunnel (arched concrete shell + warm ceiling light strips)
+  // Monaco Tunnel (sculpted ribbed concrete arch + twin continuous ceiling LED strips + wall reflectors)
   const tunStartIdx = Math.floor(tunnelStart * SAMPLE_COUNT);
   const tunEndIdx = Math.ceil(tunnelEnd * SAMPLE_COUNT);
+
+  const makeTunnelConcreteTex = () => {
+    const c = document.createElement('canvas');
+    c.width = 512;
+    c.height = 512;
+    const g = c.getContext('2d');
+    g.fillStyle = '#363d49';
+    g.fillRect(0, 0, 512, 512);
+    // Subtle concrete aggregate noise & panel formwork lines
+    for (let i = 0; i < 3200; i++) {
+      const x = (i * 73) % 512;
+      const y = (i * 137) % 512;
+      const v = 46 + ((i * 29) % 24);
+      g.fillStyle = `rgb(${v},${v + 4},${v + 10})`;
+      g.fillRect(x, y, 2, 2);
+    }
+    g.fillStyle = 'rgba(18, 22, 28, 0.45)';
+    for (let y = 0; y < 512; y += 128) g.fillRect(0, y, 512, 4);
+    for (let x = 0; x < 512; x += 64) g.fillRect(x, 0, 2, 512);
+    // Lower tunnel concrete safety-wall band (lighter painted curb-wall skirt)
+    g.fillStyle = '#4f5764';
+    g.fillRect(0, 0, 48, 512);
+    g.fillRect(464, 0, 48, 512);
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  };
+
   const tunShellMat = new THREE.MeshStandardMaterial({
-    color: 0x2a2f38,
-    roughness: 0.85,
-    metalness: 0.1,
+    color: 0xffffff,
+    map: makeTunnelConcreteTex(),
+    roughness: 0.82,
+    metalness: 0.08,
     side: THREE.DoubleSide,
   });
-  const tunLightMat = new THREE.MeshStandardMaterial({
-    color: 0xffe4b5,
-    emissive: 0xffb84d,
-    emissiveIntensity: 2.2,
+  const tunHousingMat = new THREE.MeshStandardMaterial({
+    color: 0x151921,
+    roughness: 0.45,
+    metalness: 0.65,
+    side: THREE.DoubleSide,
   });
+  const tunStripMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: 0xffebb8,
+    emissiveIntensity: 3.6,
+    roughness: 0.15,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+  });
+
   const tunPositions = [];
+  const tunUvs = [];
   const tunIndices = [];
+  const tunArchSteps = 16;
+  const tunArchW = HALF_WIDTH + 1.55;
+  const tunArchH = 6.45;
   let tVert = 0;
-  for (let i = tunStartIdx; i <= tunEndIdx; i += 2) {
+
+  // Helper to append a continuous quad-strip ribbon along tunnel samples
+  const buildTunnelRibbon = (latA, yA, latB, yB) => {
+    const rPos = [];
+    const rIdx = [];
+    let rv = 0;
+    for (let i = tunStartIdx; i <= tunEndIdx; i++) {
+      const idx = i % SAMPLE_COUNT;
+      const p = pos[idx];
+      const r = right[idx];
+      rPos.push(
+        p.x + r.x * latA, p.y + yA, p.z + r.z * latA,
+        p.x + r.x * latB, p.y + yB, p.z + r.z * latB
+      );
+      if (i > tunStartIdx) {
+        rIdx.push(rv - 2, rv - 1, rv, rv - 1, rv + 1, rv);
+      }
+      rv += 2;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(rPos, 3));
+    geo.setIndex(rIdx);
+    geo.computeVertexNormals();
+    return geo;
+  };
+
+  for (let i = tunStartIdx; i <= tunEndIdx; i++) {
     const idx = i % SAMPLE_COUNT;
     const p = pos[idx];
     const r = right[idx];
-    const t = tan[idx];
-    const archSteps = 7;
-    for (let a = 0; a <= archSteps; a++) {
-      const ang = (a / archSteps) * Math.PI;
-      const rx = Math.cos(ang) * (HALF_WIDTH + 1.5);
-      const ry = Math.sin(ang) * 6.4;
+    const vCoord = (i - tunStartIdx) * 0.22;
+    for (let a = 0; a <= tunArchSteps; a++) {
+      const frac = a / tunArchSteps;
+      const ang = frac * Math.PI;
+      const rx = Math.cos(ang) * tunArchW;
+      const ry = Math.sin(ang) * tunArchH - 0.15;
       tunPositions.push(p.x - r.x * rx, p.y + ry, p.z - r.z * rx);
+      tunUvs.push(frac, vCoord);
     }
     if (i > tunStartIdx) {
-      const prevRow = tVert - (archSteps + 1);
-      for (let a = 0; a < archSteps; a++) {
+      const prevRow = tVert - (tunArchSteps + 1);
+      for (let a = 0; a < tunArchSteps; a++) {
         tunIndices.push(
           prevRow + a, prevRow + a + 1, tVert + a,
           prevRow + a + 1, tVert + a + 1, tVert + a
         );
       }
     }
-    tVert += archSteps + 1;
-
-    if (i % 6 === 0) {
-      const lamp = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.16, 1.4), tunLightMat);
-      lamp.position.set(p.x, p.y + 5.95, p.z);
-      lamp.rotation.y = Math.atan2(-t.x, -t.z);
-      scene.add(lamp);
-    }
+    tVert += tunArchSteps + 1;
   }
   const tunGeo = new THREE.BufferGeometry();
   tunGeo.setAttribute('position', new THREE.Float32BufferAttribute(tunPositions, 3));
+  tunGeo.setAttribute('uv', new THREE.Float32BufferAttribute(tunUvs, 2));
   tunGeo.setIndex(tunIndices);
   tunGeo.computeVertexNormals();
   scene.add(new THREE.Mesh(tunGeo, tunShellMat));
+
+  // Twin Continuous Glowing LED Ceiling Light Strips + Dark Aluminum Mount Housings (Left & Right Lanes)
+  scene.add(new THREE.Mesh(buildTunnelRibbon(-3.95, 5.69, -3.35, 5.81), tunHousingMat));
+  scene.add(new THREE.Mesh(buildTunnelRibbon(3.35, 5.81, 3.95, 5.69), tunHousingMat));
+  scene.add(new THREE.Mesh(buildTunnelRibbon(-3.81, 5.65, -3.49, 5.74), tunStripMat));
+  scene.add(new THREE.Mesh(buildTunnelRibbon(3.49, 5.74, 3.81, 5.65), tunStripMat));
+
+  // Structural Concrete Arch Ribs along Tunnel Interior (InstancedMesh)
+  const makeTunnelArchRibGeometry = () => {
+    const segs = 16;
+    const outerW = tunArchW + 0.02;
+    const outerH = tunArchH + 0.02;
+    const innerW = tunArchW - 0.36;
+    const innerH = tunArchH - 0.34;
+    const halfD = 0.24;
+    const rPos = [];
+    const rIdx = [];
+
+    // Helper to push quad
+    const pushQuad = (a, b, c, d) => {
+      const base = rPos.length / 3;
+      rPos.push(...a, ...b, ...c, ...d);
+      rIdx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    };
+
+    for (let s = 0; s < segs; s++) {
+      const a0 = (s / segs) * Math.PI;
+      const a1 = ((s + 1) / segs) * Math.PI;
+      const ox0 = Math.cos(a0) * outerW, oy0 = Math.sin(a0) * outerH - 0.15;
+      const ox1 = Math.cos(a1) * outerW, oy1 = Math.sin(a1) * outerH - 0.15;
+      const ix0 = Math.cos(a0) * innerW, iy0 = Math.sin(a0) * innerH - 0.15;
+      const ix1 = Math.cos(a1) * innerW, iy1 = Math.sin(a1) * innerH - 0.15;
+
+      // Inner soffit face (visible from road)
+      pushQuad([ix0, iy0, halfD], [ix1, iy1, halfD], [ix1, iy1, -halfD], [ix0, iy0, -halfD]);
+      // Front face (+Z)
+      pushQuad([ox0, oy0, halfD], [ox1, oy1, halfD], [ix1, iy1, halfD], [ix0, iy0, halfD]);
+      // Back face (-Z)
+      pushQuad([ix0, iy0, -halfD], [ix1, iy1, -halfD], [ox1, oy1, -halfD], [ox0, oy0, -halfD]);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(rPos, 3));
+    geo.setIndex(rIdx);
+    geo.computeVertexNormals();
+    return geo;
+  };
+
+  const ribSpecs = [];
+  for (let i = tunStartIdx; i <= tunEndIdx; i += 3) {
+    const idx = i % SAMPLE_COUNT;
+    const isPortal = i === tunStartIdx || i + 3 > tunEndIdx;
+    ribSpecs.push({
+      p: pos[idx],
+      t: tan[idx],
+      scaleZ: isPortal ? 2.1 : 1.0,
+    });
+  }
+  if (ribSpecs.length) {
+    const ribMat = new THREE.MeshStandardMaterial({
+      color: 0x464f5e,
+      roughness: 0.72,
+      metalness: 0.12,
+      side: THREE.DoubleSide,
+    });
+    const ribIM = new THREE.InstancedMesh(makeTunnelArchRibGeometry(), ribMat, ribSpecs.length);
+    ribSpecs.forEach((rb, k) => {
+      postDummy.position.copy(rb.p);
+      postDummy.rotation.order = 'YXZ';
+      postDummy.rotation.set(
+        Math.asin(THREE.MathUtils.clamp(rb.t.y, -1, 1)),
+        Math.atan2(-rb.t.x, -rb.t.z),
+        0
+      );
+      postDummy.scale.set(1, 1, rb.scaleZ);
+      postDummy.updateMatrix();
+      ribIM.setMatrixAt(k, postDummy.matrix);
+    });
+    ribIM.instanceMatrix.needsUpdate = true;
+    ribIM.computeBoundingSphere();
+    scene.add(ribIM);
+    postDummy.rotation.order = 'XYZ';
+    postDummy.scale.set(1, 1, 1);
+  }
+
+  // Thin Amber (Right) & Cool-White (Left) Side Wall Reflector Markers (InstancedMesh)
+  const leftReflectorSpecs = [];
+  const rightReflectorSpecs = [];
+  for (let i = tunStartIdx + 1; i < tunEndIdx; i += 2) {
+    const idx = i % SAMPLE_COUNT;
+    const p = pos[idx];
+    const r = right[idx];
+    const t = tan[idx];
+    const yaw = Math.atan2(-t.x, -t.z);
+    leftReflectorSpecs.push({
+      x: p.x - r.x * (HALF_WIDTH + 1.32),
+      y: p.y + 1.12,
+      z: p.z - r.z * (HALF_WIDTH + 1.32),
+      yaw,
+    });
+    rightReflectorSpecs.push({
+      x: p.x + r.x * (HALF_WIDTH + 1.32),
+      y: p.y + 1.12,
+      z: p.z + r.z * (HALF_WIDTH + 1.32),
+      yaw,
+    });
+  }
+  if (leftReflectorSpecs.length) {
+    const reflGeo = new THREE.BoxGeometry(0.10, 0.15, 0.96);
+    const whiteReflMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0xd9f2ff,
+      emissiveIntensity: 2.6,
+      roughness: 0.2,
+    });
+    const amberReflMat = new THREE.MeshStandardMaterial({
+      color: 0xffd28a,
+      emissive: 0xff9a18,
+      emissiveIntensity: 2.8,
+      roughness: 0.2,
+    });
+    const leftReflIM = new THREE.InstancedMesh(reflGeo, whiteReflMat, leftReflectorSpecs.length);
+    const rightReflIM = new THREE.InstancedMesh(reflGeo, amberReflMat, rightReflectorSpecs.length);
+    leftReflectorSpecs.forEach((rf, k) => {
+      postDummy.position.set(rf.x, rf.y, rf.z);
+      postDummy.rotation.set(0, rf.yaw, 0);
+      postDummy.scale.set(1, 1, 1);
+      postDummy.updateMatrix();
+      leftReflIM.setMatrixAt(k, postDummy.matrix);
+    });
+    rightReflectorSpecs.forEach((rf, k) => {
+      postDummy.position.set(rf.x, rf.y, rf.z);
+      postDummy.rotation.set(0, rf.yaw, 0);
+      postDummy.scale.set(1, 1, 1);
+      postDummy.updateMatrix();
+      rightReflIM.setMatrixAt(k, postDummy.matrix);
+    });
+    leftReflIM.instanceMatrix.needsUpdate = true;
+    rightReflIM.instanceMatrix.needsUpdate = true;
+    leftReflIM.computeBoundingSphere();
+    rightReflIM.computeBoundingSphere();
+    scene.add(leftReflIM, rightReflIM);
+  }
+
+  // Overhead Tunnel Jet-Fan Ventilation Pods along Center Apex (InstancedMesh)
+  const fanGeo = new THREE.CylinderGeometry(0.42, 0.42, 2.2, 14);
+  fanGeo.rotateX(Math.PI / 2);
+  const fanMat = new THREE.MeshStandardMaterial({ color: 0x1b212b, metalness: 0.68, roughness: 0.36 });
+  const fanCount = 4;
+  const fanIM = new THREE.InstancedMesh(fanGeo, fanMat, fanCount);
+  for (let f = 0; f < fanCount; f++) {
+    const frac = (f + 0.5) / fanCount;
+    const fIdx = Math.round(THREE.MathUtils.lerp(tunStartIdx, tunEndIdx, frac)) % SAMPLE_COUNT;
+    const fp = pos[fIdx];
+    const ft = tan[fIdx];
+    postDummy.position.set(fp.x, fp.y + 5.72, fp.z);
+    postDummy.rotation.set(0, Math.atan2(-ft.x, -ft.z), 0);
+    postDummy.scale.set(1, 1, 1);
+    postDummy.updateMatrix();
+    fanIM.setMatrixAt(f, postDummy.matrix);
+  }
+  fanIM.instanceMatrix.needsUpdate = true;
+  fanIM.computeBoundingSphere();
+  scene.add(fanIM);
+
+  // 2 Lightweight Interior Fill Lights (no shadow casting for 60 FPS lock)
+  for (const frac of [0.33, 0.67]) {
+    const lIdx = Math.round(THREE.MathUtils.lerp(tunStartIdx, tunEndIdx, frac)) % SAMPLE_COUNT;
+    const lp = pos[lIdx];
+    const fillLight = new THREE.PointLight(0xffe4b8, 22, 105, 1.35);
+    fillLight.position.set(lp.x, lp.y + 4.9, lp.z);
+    scene.add(fillLight);
+  }
 
   // Explicit Port Hercule harbor water zone (shoreline seawall at x = 732 + NE/SE coves)
   const HARBOR_EDGE_X = 732;
