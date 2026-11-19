@@ -18,11 +18,26 @@ import { CircuitId } from '../data/circuits.ts';
 import {
   createF1Car,
   updateCarPhysics,
+  resolveCarCollisions,
   applyCarDamage,
   applyCarRepair,
   resetCarHealth,
 } from './carPhysics.js';
-import { initAIRacers, updateAIRacers, placeCarOnGrid, restartRace } from './aiRacer.js';
+import {
+  initAIRacers,
+  updateAIRacers,
+  placeCarOnGrid,
+  restartRace,
+  setSessionHold,
+  syncSessionFromHost,
+} from './aiRacer.js';
+import {
+  AiTelemetryBatchPacket,
+  AiTelemetryCar,
+  PlayerTelemetryPacket,
+  RaceSlotAssignment,
+  colorHexToNum,
+} from './multiplayer.ts';
 import {
   initAudio,
   updateAudio,
@@ -344,11 +359,29 @@ function createMediterraneanClouds(scene: THREE.Scene, sunDir: THREE.Vector3) {
 export type WeatherType = 'cerah' | 'hujan' | 'kabut';
 export type { CircuitId };
 
+export interface MultiplayerStartOptions {
+  isHost: boolean;
+  localPlayerId: string;
+  driverName: string;
+  liveryColor: string;
+  slots: RaceSlotAssignment[];
+  startAtMs?: number;
+  onSendPlayerTelemetry?: (pkt: PlayerTelemetryPacket) => void;
+  onSendAiTelemetry?: (pkt: AiTelemetryBatchPacket) => void;
+  onHostRestart?: () => void;
+}
+
 export interface EngineController {
   startRace: (weather: WeatherType, circuit?: CircuitId) => void;
   setWeather: (weather: WeatherType) => void;
   setCircuit: (circuit: CircuitId) => void;
   restartWithWeather: (weather: WeatherType, circuit?: CircuitId) => void;
+  setPlayerProfile: (name: string, liveryColor: string) => void;
+  startMultiplayerRace: (weather: WeatherType, circuit: CircuitId, mp: MultiplayerStartOptions) => void;
+  stopMultiplayerToSinglePreview: () => void;
+  receiveRemotePlayerTelemetry: (pkt: PlayerTelemetryPacket) => void;
+  receiveRemoteAiTelemetry: (pkt: AiTelemetryBatchPacket) => void;
+  removeRemotePlayer: (playerId: string) => void;
 }
 
 export interface RaceFinishResult {
@@ -668,13 +701,79 @@ export function startMonacoEngine(
   setCloudCenter(initCx, initCz);
   setHudCircuit(currentCircuit);
 
-  const playerCar = createF1Car(0xe10600, true);
+  let playerDriverName = 'YOU';
+  let playerLiveryHex = '#e10600';
+  let playerLiveryNum = 0xe10600;
+
+  let playerCar: THREE.Group = createF1Car(playerLiveryNum, true);
+  playerCar.userData.driver = playerDriverName;
+  playerCar.userData.color = playerLiveryNum;
   scene.add(playerCar);
   updateCarPhysics(playerCar, { reset: true }, trackData, 0);
   placeCarOnGrid(playerCar, trackData, 0);
 
-  const aiList = initAIRacers(scene, trackData);
-  const allCars = [playerCar, ...aiList];
+  let aiList: THREE.Group[] = initAIRacers(scene, trackData, { count: 7, startSlot: 1 });
+  const remoteHumanCars = new Map<string, THREE.Group>();
+  const remoteAiCars = new Map<number, THREE.Group>();
+  let allCars: THREE.Group[] = [playerCar, ...aiList];
+
+  function disposeCarObject(car: THREE.Object3D) {
+    scene.remove(car);
+    car.traverse((obj: any) => {
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) {
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const m of mats) {
+          if (!m) continue;
+          if (m.map) m.map.dispose();
+          m.dispose();
+        }
+      }
+    });
+  }
+
+  function createDriverNameplate(name: string, hexColor: string): THREE.Sprite {
+    const c = document.createElement('canvas');
+    c.width = 256;
+    c.height = 64;
+    const g = c.getContext('2d');
+    if (g) {
+      g.clearRect(0, 0, 256, 64);
+      g.fillStyle = 'rgba(11, 15, 22, 0.86)';
+      g.beginPath();
+      if (typeof g.roundRect === 'function') {
+        g.roundRect(6, 10, 244, 44, 10);
+      } else {
+        g.rect(6, 10, 244, 44);
+      }
+      g.fill();
+      g.strokeStyle = 'rgba(242, 239, 230, 0.28)';
+      g.lineWidth = 2;
+      g.stroke();
+
+      g.fillStyle = hexColor || '#00d2be';
+      g.fillRect(14, 18, 8, 28);
+
+      g.fillStyle = '#f2efe6';
+      g.font = '900 22px "Titillium Web", sans-serif';
+      g.textAlign = 'left';
+      g.textBaseline = 'middle';
+      g.fillText((name || 'DRIVER').toUpperCase().slice(0, 14), 32, 33);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mat = new THREE.SpriteMaterial({
+      map: tex,
+      transparent: true,
+      depthWrite: false,
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.position.set(0, 1.95, 0);
+    sprite.scale.set(2.9, 0.725, 1);
+    sprite.renderOrder = 5;
+    sprite.userData.isNameplate = true;
+    return sprite;
+  }
 
   let trackUserData = trackData.trackCurve.userData as any;
   let waterMat = trackUserData.waterMaterial;
@@ -1445,11 +1544,340 @@ export function startMonacoEngine(
   } | null = null;
   let wallHitAudioCooldown = 0;
   let aiHitAudioCooldown = 0;
-  const whooshTrackers = aiList.map(() => ({
+  let whooshTrackers = allCars.slice(1).map(() => ({
     prevAlong: 0,
     initialized: false,
     cooldown: 0,
   }));
+
+  let mpActive = false;
+  let mpConfig: MultiplayerStartOptions | null = null;
+  let telemetryAcc = 0;
+  const _netEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+  const _netGoalPos = new THREE.Vector3();
+
+  function refreshAllCarsAndTrackers() {
+    allCars = [
+      playerCar,
+      ...aiList,
+      ...Array.from(remoteHumanCars.values()),
+      ...Array.from(remoteAiCars.values()),
+    ];
+    whooshTrackers = allCars.slice(1).map(() => ({
+      prevAlong: 0,
+      initialized: false,
+      cooldown: 0,
+    }));
+  }
+
+  function clearAllOpponents() {
+    for (const c of aiList) disposeCarObject(c);
+    aiList = [];
+    for (const c of remoteHumanCars.values()) disposeCarObject(c);
+    remoteHumanCars.clear();
+    for (const c of remoteAiCars.values()) disposeCarObject(c);
+    remoteAiCars.clear();
+    refreshAllCarsAndTrackers();
+  }
+
+  function ensurePlayerCarAppearance(name: string, liveryHex: string) {
+    playerDriverName = name || 'YOU';
+    playerLiveryHex = liveryHex || '#e10600';
+    const nextNum = colorHexToNum(playerLiveryHex);
+    if (playerLiveryNum !== nextNum) {
+      playerLiveryNum = nextNum;
+      const oldPos = playerCar.position.clone();
+      const oldRot = playerCar.rotation.clone();
+      const oldSlot = playerCar.userData.gridSlot ?? 0;
+      const oldPhys = playerCar.userData.physics;
+      disposeCarObject(playerCar);
+      playerCar = createF1Car(nextNum, true);
+      playerCar.position.copy(oldPos);
+      playerCar.rotation.copy(oldRot);
+      playerCar.userData.gridSlot = oldSlot;
+      if (oldPhys) {
+        playerCar.userData.physics = { ...playerCar.userData.physics, ...oldPhys };
+      }
+      const cockpit = CAMERA_MODES[cameraMode] === 'COCKPIT';
+      playerCar.userData.parts.helmet.visible = !cockpit;
+      scene.add(playerCar);
+    }
+    playerCar.userData.driver = playerDriverName;
+    playerCar.userData.color = playerLiveryNum;
+    if (mpActive) {
+      playerCar.userData.team = 'Online Driver';
+    } else {
+      playerCar.userData.team = trackData?.playerTeam || 'Scuderia Monaco';
+    }
+    if (playerCar.userData.race?.entry) {
+      playerCar.userData.race.entry.name = playerDriverName;
+      playerCar.userData.race.entry.color = '#' + new THREE.Color(playerLiveryNum).getHexString();
+      playerCar.userData.race.entry.team = playerCar.userData.team;
+    }
+    refreshAllCarsAndTrackers();
+  }
+
+  function createRemoteHumanCar(slot: RaceSlotAssignment): THREE.Group {
+    const colorNum = colorHexToNum(slot.liveryColor);
+    const car = createF1Car(colorNum, false);
+    car.userData.driver = slot.name;
+    car.userData.team = 'Online Driver';
+    car.userData.color = colorNum;
+    car.userData.gridSlot = slot.gridSlot;
+    car.userData.isRemoteHuman = true;
+    car.add(createDriverNameplate(slot.name, slot.liveryColor));
+    scene.add(car);
+    placeCarOnGrid(car, trackData, slot.gridSlot);
+    car.userData.netState = {
+      targetPos: car.position.clone(),
+      targetQuat: car.quaternion.clone(),
+      targetYaw: car.userData.physics.yaw,
+      targetSpeed: 0,
+      targetSteer: 0,
+      targetDrs: false,
+      targetU: car.userData.physics.u,
+      velX: 0,
+      velZ: 0,
+      lastPacketAt: performance.now(),
+      telemetry: {
+        playerId: slot.playerId,
+        name: slot.name,
+        liveryColor: slot.liveryColor,
+        x: car.position.x,
+        y: car.position.y,
+        z: car.position.z,
+        rotY: car.userData.physics.yaw,
+        pitch: 0,
+        speed: 0,
+        steerVis: 0,
+        drs: false,
+        u: car.userData.physics.u,
+        lap: 1,
+        lapsCompleted: 0,
+        progress: 0,
+        hp: 100,
+        bestLapTime: null,
+        lastLapTime: null,
+        currentLapTime: 0,
+        finished: false,
+        finishTime: null,
+      } satisfies PlayerTelemetryPacket,
+    };
+    return car;
+  }
+
+  function createRemoteAiCar(slot: number, name: string, team: string, hexColor: string): THREE.Group {
+    const colorNum = colorHexToNum(hexColor);
+    const car = createF1Car(colorNum, false);
+    car.userData.driver = name;
+    car.userData.team = team;
+    car.userData.color = colorNum;
+    car.userData.gridSlot = slot;
+    car.userData.isRemoteAi = true;
+    scene.add(car);
+    placeCarOnGrid(car, trackData, slot);
+    car.userData.netState = {
+      targetPos: car.position.clone(),
+      targetQuat: car.quaternion.clone(),
+      targetYaw: car.userData.physics.yaw,
+      targetSpeed: 0,
+      targetSteer: 0,
+      targetDrs: false,
+      targetU: car.userData.physics.u,
+      velX: 0,
+      velZ: 0,
+      lastPacketAt: performance.now(),
+      telemetry: {
+        slot,
+        name,
+        team,
+        color: hexColor,
+        x: car.position.x,
+        y: car.position.y,
+        z: car.position.z,
+        rotY: car.userData.physics.yaw,
+        pitch: 0,
+        speed: 0,
+        steerVis: 0,
+        drs: false,
+        u: car.userData.physics.u,
+        lap: 1,
+        lapsCompleted: 0,
+        progress: 0,
+        bestLapTime: null,
+        lastLapTime: null,
+        currentLapTime: 0,
+        finished: false,
+        finishTime: null,
+      } satisfies AiTelemetryCar,
+    };
+    return car;
+  }
+
+  function interpolateRemoteCars(dt: number) {
+    const now = performance.now();
+    const alpha = 1 - Math.exp(-18 * Math.max(dt, 0.001));
+    const stepRemote = (car: THREE.Group) => {
+      const net = car.userData.netState;
+      const P = car.userData.physics;
+      const parts = car.userData.parts;
+      if (!net || !P) return;
+
+      const ageSec = Math.min(0.06, Math.max(0, (now - net.lastPacketAt) * 0.001));
+      _netGoalPos.set(
+        net.targetPos.x + net.velX * ageSec,
+        net.targetPos.y,
+        net.targetPos.z + net.velZ * ageSec
+      );
+      car.position.lerp(_netGoalPos, alpha);
+      car.quaternion.slerp(net.targetQuat, alpha);
+
+      P.speed += (net.targetSpeed - P.speed) * alpha;
+      P.yaw = net.targetYaw;
+      P.u = net.targetU;
+      P.initialized = true;
+
+      if (parts) {
+        const wheelSpin = (P.speed / 0.36) * dt;
+        for (const w of parts.wheels) w.rotation.x -= wheelSpin;
+        P.steerVis += ((net.targetSteer || 0) - P.steerVis) * alpha;
+        for (const fp of parts.frontPivots) fp.rotation.y = P.steerVis;
+        parts.drsFlap.rotation.x += ((net.targetDrs ? 0.52 : 0) - parts.drsFlap.rotation.x) * alpha;
+        P.blinkT = (P.blinkT || 0) + dt;
+        const blinkOn = Math.sin(P.blinkT * 38) > 0;
+        parts.rearLight.material.emissiveIntensity =
+          P.speed < 2 || currentWeather === 'hujan' ? (blinkOn ? 3.5 : 0.6) : 0.4;
+      }
+    };
+
+    for (const car of remoteHumanCars.values()) stepRemote(car);
+    for (const car of remoteAiCars.values()) stepRemote(car);
+  }
+
+  function mergeMultiplayerStandings(localRs: any) {
+    if (!mpActive || !mpConfig || !localRs) return localRs;
+    const closedLoop = trackData?.closedLoop !== false;
+    const totalLength = trackData?.trackCurve?.userData?.length || 2700;
+    const startU = trackData?.startFinishLine?.u || 0;
+    const finishU = trackData?.finishLineU ?? startU;
+    const meterScale = closedLoop ? totalLength : Math.max(100, (finishU - startU) * totalLength);
+
+    const localEntry = Array.isArray(localRs.standings)
+      ? localRs.standings.find((e: any) => e.isPlayer)
+      : null;
+
+    const merged: any[] = [];
+    if (localEntry) {
+      merged.push({
+        ...localEntry,
+        name: playerDriverName,
+        team: 'Online Driver',
+        color: playerLiveryHex,
+      });
+    }
+
+    for (const rCar of remoteHumanCars.values()) {
+      const t = rCar.userData?.netState?.telemetry as PlayerTelemetryPacket | undefined;
+      if (!t) continue;
+      merged.push({
+        position: 0,
+        name: t.name,
+        team: 'Online Driver',
+        color: t.liveryColor || '#00d2be',
+        isPlayer: false,
+        gridSlot: rCar.userData.gridSlot ?? 1,
+        lap: t.lap || 1,
+        lapsCompleted: t.lapsCompleted || 0,
+        progress: t.progress ?? 0,
+        gap: 0,
+        gapText: '',
+        bestLapTime: t.bestLapTime ?? null,
+        lastLapTime: t.lastLapTime ?? null,
+        currentLapTime: t.currentLapTime || 0,
+        finished: !!t.finished,
+        finishTime: t.finishTime ?? null,
+        speedKmh: (t.speed || 0) * 3.6,
+        drsActive: !!t.drs,
+      });
+    }
+
+    if (mpConfig.isHost) {
+      if (Array.isArray(localRs.standings)) {
+        for (const e of localRs.standings) {
+          if (!e.isPlayer) merged.push({ ...e });
+        }
+      }
+    } else {
+      for (const aCar of remoteAiCars.values()) {
+        const t = aCar.userData?.netState?.telemetry as AiTelemetryCar | undefined;
+        if (!t) continue;
+        merged.push({
+          position: 0,
+          name: t.name,
+          team: t.team,
+          color: t.color,
+          isPlayer: false,
+          gridSlot: t.slot,
+          lap: t.lap || 1,
+          lapsCompleted: t.lapsCompleted || 0,
+          progress: t.progress ?? 0,
+          gap: 0,
+          gapText: '',
+          bestLapTime: t.bestLapTime ?? null,
+          lastLapTime: t.lastLapTime ?? null,
+          currentLapTime: t.currentLapTime || 0,
+          finished: !!t.finished,
+          finishTime: t.finishTime ?? null,
+          speedKmh: (t.speed || 0) * 3.6,
+          drsActive: !!t.drs,
+        });
+      }
+    }
+
+    merged.sort((a, b) => {
+      if (a.finished && b.finished) return (a.finishTime ?? 1e9) - (b.finishTime ?? 1e9);
+      if (a.finished) return -1;
+      if (b.finished) return 1;
+      return b.progress - a.progress || a.gridSlot - b.gridSlot;
+    });
+
+    const leader = merged[0];
+    let finishedCount = 0;
+    merged.forEach((e, idx) => {
+      e.position = idx + 1;
+      if (e.finished) finishedCount++;
+      if (idx === 0) {
+        e.gap = 0;
+        e.gapText = 'LEADER';
+        return;
+      }
+      if (e.finished && leader?.finished) {
+        e.gap = Math.max(0, (e.finishTime ?? 0) - (leader.finishTime ?? 0));
+        e.gapText = `+${e.gap.toFixed(3)}s`;
+        return;
+      }
+      const lapsBehind = closedLoop ? Math.floor((leader?.progress ?? 0) - e.progress + 1e-6) : 0;
+      if (lapsBehind >= 1) {
+        e.gap = lapsBehind;
+        e.gapText = `+${lapsBehind} LAP${lapsBehind > 1 ? 'S' : ''}`;
+      } else {
+        e.gap = Math.max(0, (((leader?.progress ?? 0) - e.progress) * meterScale) / 45);
+        e.gapText = `+${e.gap.toFixed(3)}s`;
+      }
+    });
+
+    const myStanding = merged.find((e) => e.isPlayer);
+    const pos = myStanding?.position || 1;
+    localRs.standings = merged;
+    localRs.playerPosition = pos;
+    localRs.leaderName = leader?.name || localRs.leaderName;
+    localRs.finishedCount = finishedCount;
+    localRs.totalCars = merged.length;
+    localRs.gapToLeader = myStanding?.gap ?? 0;
+    localRs.gapAhead = pos > 1 ? Math.max(0, (myStanding?.gap ?? 0) - merged[pos - 2].gap) : 0;
+    localRs.gapBehind = pos < merged.length ? Math.max(0, merged[pos].gap - (myStanding?.gap ?? 0)) : 0;
+    return localRs;
+  }
 
   function reportCountdown(val: number | null) {
     if (val !== lastReportedCountdown) {
@@ -1471,15 +1899,44 @@ export function startMonacoEngine(
     tunnelMix = 0;
   }
 
-  function fullRestartRace() {
+  function fullRestartRace(holdSeconds?: number) {
     stopVictoryMusic();
     chequeredCountdown = null;
     forcedFinish = false;
     forcedFinishState = null;
     accumulator = 0;
+    telemetryAcc = 0;
     reportCountdown(null);
     callbacks.onRaceFinish?.(null);
-    restartRace(allCars, trackData);
+    restartRace([playerCar, ...aiList], trackData, holdSeconds);
+    for (const rCar of remoteHumanCars.values()) {
+      placeCarOnGrid(rCar, trackData, rCar.userData.gridSlot ?? 1);
+      if (rCar.userData.netState) {
+        rCar.userData.netState.targetPos.copy(rCar.position);
+        rCar.userData.netState.targetQuat.copy(rCar.quaternion);
+        rCar.userData.netState.targetSpeed = 0;
+        rCar.userData.netState.velX = 0;
+        rCar.userData.netState.velZ = 0;
+        rCar.userData.netState.telemetry.finished = false;
+        rCar.userData.netState.telemetry.finishTime = null;
+        rCar.userData.netState.telemetry.progress = 0;
+        rCar.userData.netState.telemetry.lap = 1;
+      }
+    }
+    for (const aCar of remoteAiCars.values()) {
+      placeCarOnGrid(aCar, trackData, aCar.userData.gridSlot ?? 1);
+      if (aCar.userData.netState) {
+        aCar.userData.netState.targetPos.copy(aCar.position);
+        aCar.userData.netState.targetQuat.copy(aCar.quaternion);
+        aCar.userData.netState.targetSpeed = 0;
+        aCar.userData.netState.velX = 0;
+        aCar.userData.netState.velZ = 0;
+        aCar.userData.netState.telemetry.finished = false;
+        aCar.userData.netState.telemetry.finishTime = null;
+        aCar.userData.netState.telemetry.progress = 0;
+        aCar.userData.netState.telemetry.lap = 1;
+      }
+    }
     resetCarHealth(playerCar);
     resetParticles();
     prevHealth = 100;
@@ -1529,6 +1986,16 @@ export function startMonacoEngine(
     fullRestartRace();
   }
 
+  const SINGLE_AI_TEAMS = [
+    { color: '#00d2be', team: 'Teal Arrow GP', driver: 'L. Moreau' },
+    { color: '#ff8000', team: 'Papaya Speed', driver: 'K. Tanaka' },
+    { color: '#006f62', team: 'Verde Racing', driver: 'S. Rossi' },
+    { color: '#3b82f6', team: 'Azzurra Corse', driver: 'A. Silva' },
+    { color: '#facc15', team: 'Giallo Motors', driver: 'M. Weber' },
+    { color: '#a855f7', team: 'Viola Grand Prix', driver: 'D. Costa' },
+    { color: '#f472b6', team: 'Rose Racing', driver: 'N. Laurent' },
+  ];
+
   callbacks.onReady?.({
     setWeather: (w: WeatherType) => {
       applyWeatherPreset(w);
@@ -1536,7 +2003,29 @@ export function startMonacoEngine(
     setCircuit: (c: CircuitId) => {
       switchCircuit(c);
     },
+    setPlayerProfile: (name: string, liveryColor: string) => {
+      ensurePlayerCarAppearance(name, liveryColor);
+    },
     startRace: (w: WeatherType, c?: CircuitId) => {
+      mpActive = false;
+      mpConfig = null;
+      if (c && c !== currentCircuit) {
+        switchCircuit(c);
+      }
+      clearAllOpponents();
+      playerCar.userData.gridSlot = 0;
+      ensurePlayerCarAppearance(playerDriverName, playerLiveryHex);
+      aiList = initAIRacers(scene, trackData, { count: 7, startSlot: 1 });
+      refreshAllCarsAndTrackers();
+      applyWeatherPreset(w);
+      waitingToStart = false;
+      fullRestartRace();
+    },
+    restartWithWeather: (w: WeatherType, c?: CircuitId) => {
+      if (mpActive && mpConfig) {
+        if (mpConfig.isHost) mpConfig.onHostRestart?.();
+        return;
+      }
       if (c && c !== currentCircuit) {
         switchCircuit(c);
       }
@@ -1544,13 +2033,150 @@ export function startMonacoEngine(
       waitingToStart = false;
       fullRestartRace();
     },
-    restartWithWeather: (w: WeatherType, c?: CircuitId) => {
+    startMultiplayerRace: (w: WeatherType, c: CircuitId, mp: MultiplayerStartOptions) => {
+      mpActive = true;
+      mpConfig = mp;
       if (c && c !== currentCircuit) {
         switchCircuit(c);
       }
+      clearAllOpponents();
+
+      const mySlotObj = mp.slots.find((s) => s.playerId === mp.localPlayerId);
+      const myGridSlot = mySlotObj?.gridSlot ?? 0;
+      playerCar.userData.gridSlot = myGridSlot;
+      ensurePlayerCarAppearance(mp.driverName, mp.liveryColor);
+
+      const humanSlots = mp.slots.slice(0, 8);
+      for (const s of humanSlots) {
+        if (s.playerId === mp.localPlayerId) continue;
+        remoteHumanCars.set(s.playerId, createRemoteHumanCar(s));
+      }
+
+      const aiCount = Math.max(0, 8 - humanSlots.length);
+      const aiStartSlot = humanSlots.length;
+      const deterministicHold =
+        typeof mp.startAtMs === 'number'
+          ? 0.75 + ((mp.startAtMs % 700) / 700) * 0.65
+          : 0.95;
+
+      if (mp.isHost) {
+        aiList = initAIRacers(scene, trackData, {
+          count: aiCount,
+          startSlot: aiStartSlot,
+          holdSeconds: deterministicHold,
+        });
+      } else {
+        aiList = [];
+        for (let i = 0; i < aiCount; i++) {
+          const teamInfo = SINGLE_AI_TEAMS[i % SINGLE_AI_TEAMS.length];
+          const slot = aiStartSlot + i;
+          remoteAiCars.set(slot, createRemoteAiCar(slot, teamInfo.driver, teamInfo.team, teamInfo.color));
+        }
+      }
+
+      refreshAllCarsAndTrackers();
       applyWeatherPreset(w);
       waitingToStart = false;
+      fullRestartRace(deterministicHold);
+      setSessionHold(trackData, deterministicHold);
+    },
+    stopMultiplayerToSinglePreview: () => {
+      mpActive = false;
+      mpConfig = null;
+      waitingToStart = true;
+      clearAllOpponents();
+      playerCar.userData.gridSlot = 0;
+      ensurePlayerCarAppearance(playerDriverName, playerLiveryHex);
+      aiList = initAIRacers(scene, trackData, { count: 7, startSlot: 1 });
+      refreshAllCarsAndTrackers();
       fullRestartRace();
+    },
+    receiveRemotePlayerTelemetry: (pkt: PlayerTelemetryPacket) => {
+      if (!mpActive || !mpConfig || pkt.playerId === mpConfig.localPlayerId) return;
+      let rCar = remoteHumanCars.get(pkt.playerId);
+      if (!rCar) {
+        rCar = createRemoteHumanCar({
+          playerId: pkt.playerId,
+          name: pkt.name,
+          liveryColor: pkt.liveryColor,
+          gridSlot: remoteHumanCars.size + 1,
+        });
+        remoteHumanCars.set(pkt.playerId, rCar);
+        refreshAllCarsAndTrackers();
+      }
+      const net = rCar.userData.netState;
+      if (!net) return;
+      const now = performance.now();
+      const dtPkt = Math.max(0.02, Math.min(0.25, (now - net.lastPacketAt) * 0.001));
+      const dx = pkt.x - net.targetPos.x;
+      const dz = pkt.z - net.targetPos.z;
+      if (Math.hypot(dx, dz) < 25) {
+        net.velX = THREE.MathUtils.clamp(dx / dtPkt, -95, 95);
+        net.velZ = THREE.MathUtils.clamp(dz / dtPkt, -95, 95);
+      } else {
+        // Large jump (reset/respawn): snap cleanly
+        net.velX = 0;
+        net.velZ = 0;
+        rCar.position.set(pkt.x, pkt.y, pkt.z);
+      }
+      net.targetPos.set(pkt.x, pkt.y, pkt.z);
+      _netEuler.set(pkt.pitch || 0, pkt.rotY, 0, 'YXZ');
+      net.targetQuat.setFromEuler(_netEuler);
+      net.targetYaw = pkt.rotY;
+      net.targetSpeed = pkt.speed || 0;
+      net.targetSteer = pkt.steerVis || 0;
+      net.targetDrs = !!pkt.drs;
+      net.targetU = pkt.u ?? 0;
+      net.lastPacketAt = now;
+      net.telemetry = pkt;
+    },
+    receiveRemoteAiTelemetry: (pkt: AiTelemetryBatchPacket) => {
+      if (!mpActive || !mpConfig || mpConfig.isHost) return;
+      syncSessionFromHost(trackData, pkt);
+      if (typeof pkt.chequeredCountdown === 'number' && !forcedFinish) {
+        chequeredCountdown =
+          chequeredCountdown == null ? pkt.chequeredCountdown : Math.min(chequeredCountdown, pkt.chequeredCountdown);
+      }
+      if (!Array.isArray(pkt.cars)) return;
+      const now = performance.now();
+      for (const ac of pkt.cars) {
+        let aCar = remoteAiCars.get(ac.slot);
+        if (!aCar) {
+          aCar = createRemoteAiCar(ac.slot, ac.name, ac.team, ac.color);
+          remoteAiCars.set(ac.slot, aCar);
+          refreshAllCarsAndTrackers();
+        }
+        const net = aCar.userData.netState;
+        if (!net) continue;
+        const dtPkt = Math.max(0.02, Math.min(0.25, (now - net.lastPacketAt) * 0.001));
+        const dx = ac.x - net.targetPos.x;
+        const dz = ac.z - net.targetPos.z;
+        if (Math.hypot(dx, dz) < 25) {
+          net.velX = THREE.MathUtils.clamp(dx / dtPkt, -95, 95);
+          net.velZ = THREE.MathUtils.clamp(dz / dtPkt, -95, 95);
+        } else {
+          net.velX = 0;
+          net.velZ = 0;
+          aCar.position.set(ac.x, ac.y, ac.z);
+        }
+        net.targetPos.set(ac.x, ac.y, ac.z);
+        _netEuler.set(ac.pitch || 0, ac.rotY, 0, 'YXZ');
+        net.targetQuat.setFromEuler(_netEuler);
+        net.targetYaw = ac.rotY;
+        net.targetSpeed = ac.speed || 0;
+        net.targetSteer = ac.steerVis || 0;
+        net.targetDrs = !!ac.drs;
+        net.targetU = ac.u ?? 0;
+        net.lastPacketAt = now;
+        net.telemetry = ac;
+      }
+    },
+    removeRemotePlayer: (playerId: string) => {
+      const rCar = remoteHumanCars.get(playerId);
+      if (!rCar) return;
+      remoteHumanCars.delete(playerId);
+      disposeCarObject(rCar);
+      refreshAllCarsAndTrackers();
     },
   });
 
@@ -1588,7 +2214,13 @@ export function startMonacoEngine(
 
     const playerP = playerCar.userData.physics;
     if (!waitingToStart && controls.reset && (raceState?.isFinished || forcedFinish || playerP.health <= 0)) {
-      fullRestartRace();
+      if (mpActive && mpConfig) {
+        if (mpConfig.isHost) {
+          mpConfig.onHostRestart?.();
+        }
+      } else {
+        fullRestartRace();
+      }
       controls.reset = false;
     }
 
@@ -1600,7 +2232,7 @@ export function startMonacoEngine(
 
     if (waitingToStart) {
       carState = updateCarPhysics(playerCar, FROZEN_CONTROLS, trackData, 0);
-      raceState = updateAIRacers(aiList, allCars, trackData, 0, true);
+      raceState = updateAIRacers(aiList, [playerCar, ...aiList], trackData, 0, true);
       accumulator = 0;
     } else {
       accumulator += dt;
@@ -1624,9 +2256,23 @@ export function startMonacoEngine(
           wallHitAudioCooldown = 0.24;
         }
 
-        raceState = updateAIRacers(aiList, allCars, trackData, STEP, false);
+        const simCars = [playerCar, ...aiList];
+        raceState = updateAIRacers(aiList, simCars, trackData, STEP, false);
 
-        // Post-leader Chequered Flag 15s finish countdown / all-AI-finished check
+        // In multiplayer, also resolve solid OBB contact between local car(s) and remote human/AI cars
+        let extraCollisions: any[] = [];
+        if (mpActive && (remoteHumanCars.size > 0 || remoteAiCars.size > 0)) {
+          const remoteCars = [...remoteHumanCars.values(), ...remoteAiCars.values()];
+          const colliderSet = [playerCar, ...aiList, ...remoteCars];
+          extraCollisions = resolveCarCollisions(colliderSet, trackData, STEP);
+        }
+
+        if (mpActive) {
+          mergeMultiplayerStandings(raceState);
+        }
+
+        // Post-leader Chequered Flag 15s finish countdown / all-opponents-finished check
+        const totalOpponents = Math.max(1, (raceState?.totalCars || 8) - 1);
         if (raceState && !raceState.isFinished && !forcedFinish && playerP.health > 0 && raceState.phase === 'RACING') {
           if (raceState.finishedCount >= 1) {
             if (chequeredCountdown === null) {
@@ -1634,7 +2280,7 @@ export function startMonacoEngine(
             } else {
               chequeredCountdown = Math.max(0, chequeredCountdown - STEP);
             }
-            if (chequeredCountdown <= 0 || raceState.finishedCount >= aiList.length) {
+            if (chequeredCountdown <= 0 || raceState.finishedCount >= totalOpponents) {
               forcedFinish = true;
               chequeredCountdown = null;
               const standingsCopy = Array.isArray(raceState.standings)
@@ -1659,8 +2305,12 @@ export function startMonacoEngine(
         }
 
         // Process solid OBB car-to-car collision events (audio, damage, micro-shake, sparks)
-        if (!forcedFinish && raceState?.phase === 'RACING' && Array.isArray(raceState.collisionEvents)) {
-          for (const ev of raceState.collisionEvents) {
+        const allCollisions = [
+          ...(Array.isArray(raceState?.collisionEvents) ? raceState.collisionEvents : []),
+          ...extraCollisions,
+        ];
+        if (!forcedFinish && raceState?.phase === 'RACING' && allCollisions.length > 0) {
+          for (const ev of allCollisions) {
             if (ev.isPlayerInvolved && playerP.health > 0) {
               if (aiHitAudioCooldown <= 0 && ev.closingSpeed > 2.6) {
                 const carIntensity = Math.min(1, Math.max(0.22, ev.closingSpeed / 36));
@@ -1705,20 +2355,101 @@ export function startMonacoEngine(
         steps++;
       }
       if (steps === MAX_SUBSTEPS) accumulator = 0;
+
+      // Smooth 60 FPS interpolation for all remote human & Host AI cars
+      if (mpActive) {
+        interpolateRemoteCars(dt);
+        if (raceState) mergeMultiplayerStandings(raceState);
+      }
+
+      // 20Hz (50ms) Realtime Broadcast Telemetry
+      if (mpActive && mpConfig) {
+        telemetryAcc += dt;
+        if (telemetryAcc >= 0.05) {
+          telemetryAcc %= 0.05;
+          const pRace = playerCar.userData.race;
+          const pEntry = pRace?.entry;
+          mpConfig.onSendPlayerTelemetry?.({
+            playerId: mpConfig.localPlayerId,
+            name: playerDriverName,
+            liveryColor: playerLiveryHex,
+            x: Number(playerCar.position.x.toFixed(3)),
+            y: Number(playerCar.position.y.toFixed(3)),
+            z: Number(playerCar.position.z.toFixed(3)),
+            rotY: Number(playerP.yaw.toFixed(4)),
+            pitch: Number(playerCar.rotation.x.toFixed(4)),
+            speed: Number(playerP.speed.toFixed(2)),
+            steerVis: Number((playerP.steerVis || 0).toFixed(3)),
+            drs: !!carState?.drsActive,
+            u: Number((playerP.u || 0).toFixed(5)),
+            lap: pEntry?.lap || 1,
+            lapsCompleted: pEntry?.lapsCompleted || 0,
+            progress: Number((pEntry?.progress ?? 0).toFixed(5)),
+            hp: Math.round(playerP.health ?? 100),
+            bestLapTime: pEntry?.bestLapTime ?? null,
+            lastLapTime: pEntry?.lastLapTime ?? null,
+            currentLapTime: pEntry?.currentLapTime ?? 0,
+            finished: !!(pEntry?.finished || forcedFinish),
+            finishTime: pEntry?.finishTime ?? (forcedFinish ? forcedFinishState?.totalRaceTime ?? null : null),
+            checkpointName: raceState?.checkpointName,
+          });
+
+          if (mpConfig.isHost) {
+            const aiCarsPayload: AiTelemetryCar[] = aiList.map((ac) => {
+              const ap = ac.userData.physics;
+              const ar = ac.userData.race;
+              const ae = ar?.entry;
+              return {
+                slot: ac.userData.gridSlot ?? 1,
+                name: ae?.name || ac.userData.driver || 'AI',
+                team: ae?.team || ac.userData.team || 'AI GP',
+                color: ae?.color || '#00d2be',
+                x: Number(ac.position.x.toFixed(3)),
+                y: Number(ac.position.y.toFixed(3)),
+                z: Number(ac.position.z.toFixed(3)),
+                rotY: Number(ap.yaw.toFixed(4)),
+                pitch: Number(ac.rotation.x.toFixed(4)),
+                speed: Number(ap.speed.toFixed(2)),
+                steerVis: Number((ap.steerVis || 0).toFixed(3)),
+                drs: !!ae?.drsActive,
+                u: Number((ap.u || 0).toFixed(5)),
+                lap: ae?.lap || 1,
+                lapsCompleted: ae?.lapsCompleted || 0,
+                progress: Number((ae?.progress ?? 0).toFixed(5)),
+                bestLapTime: ae?.bestLapTime ?? null,
+                lastLapTime: ae?.lastLapTime ?? null,
+                currentLapTime: ae?.currentLapTime ?? 0,
+                finished: !!ae?.finished,
+                finishTime: ae?.finishTime ?? null,
+              };
+            });
+            mpConfig.onSendAiTelemetry?.({
+              hostId: mpConfig.localPlayerId,
+              phase: raceState?.phase || 'LIGHTS',
+              startLights: raceState?.startLights || 0,
+              raceTime: Number((raceState?.raceTime || 0).toFixed(3)),
+              chequeredCountdown: chequeredCountdown != null ? Number(chequeredCountdown.toFixed(2)) : null,
+              cars: aiCarsPayload,
+            });
+          }
+        }
+      }
     }
 
-    // Opponent proximity & overtake Doppler whoosh detection
+    // Opponent proximity & overtake Doppler whoosh detection across all cars (AI + remote humans)
+    const opponents = allCars.slice(1);
     if (!forcedFinish && raceState?.phase === 'RACING' && playerP.health > 0) {
       const pfX = -Math.sin(playerP.yaw);
       const pfZ = -Math.cos(playerP.yaw);
       const prX = Math.cos(playerP.yaw);
       const prZ = -Math.sin(playerP.yaw);
-      for (let i = 0; i < aiList.length; i++) {
-        const ai = aiList[i];
+      for (let i = 0; i < opponents.length; i++) {
+        const opp = opponents[i];
         const wt = whooshTrackers[i];
+        if (!wt) continue;
         wt.cooldown = Math.max(0, wt.cooldown - dt);
-        const dx = ai.position.x - playerCar.position.x;
-        const dz = ai.position.z - playerCar.position.z;
+        const dx = opp.position.x - playerCar.position.x;
+        const dz = opp.position.z - playerCar.position.z;
         const along = dx * pfX + dz * pfZ;
         const across = dx * prX + dz * prZ;
         if (!wt.initialized) {
@@ -1726,16 +2457,16 @@ export function startMonacoEngine(
           wt.initialized = true;
           continue;
         }
-        const dy = Math.abs(ai.position.y - playerCar.position.y);
+        const dy = Math.abs(opp.position.y - playerCar.position.y);
         const dist = Math.hypot(dx, dz);
         if (dy < 3.0 && dist < 8.4 && wt.cooldown <= 0) {
           const crossedPlane = wt.prevAlong * along <= 0;
           if (crossedPlane || Math.abs(along) < 2.2) {
-            const aiP = ai.userData.physics;
-            const afX = -Math.sin(aiP.yaw);
-            const afZ = -Math.cos(aiP.yaw);
-            const relVx = aiP.speed * afX - playerP.speed * pfX;
-            const relVz = aiP.speed * afZ - playerP.speed * pfZ;
+            const oppP = opp.userData.physics;
+            const afX = -Math.sin(oppP.yaw);
+            const afZ = -Math.cos(oppP.yaw);
+            const relVx = oppP.speed * afX - playerP.speed * pfX;
+            const relVz = oppP.speed * afZ - playerP.speed * pfZ;
             const relSpeed = Math.hypot(relVx, relVz);
             if (relSpeed > 4.2) {
               const pan = Math.max(-0.95, Math.min(0.95, across / 4.2));
@@ -1924,6 +2655,8 @@ export function startMonacoEngine(
 
   return function cleanup() {
     disposed = true;
+    mpActive = false;
+    mpConfig = null;
     worldAbort?.abort();
     stopVictoryMusic();
     cancelAnimationFrame(frameId);

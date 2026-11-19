@@ -49,14 +49,32 @@ function getSession(trackData) {
   if (!s) { s = {}; sessions.set(trackData, s); resetSession(s); }
   return s;
 }
-function resetSession(s) {
+function resetSession(s, customHold) {
   s.phase = 'LIGHTS';            // 'LIGHTS' | 'RACING' | 'FINISHED'
   s.clock = 0;
   s.lightsOn = 0;
-  s.hold = 0.7 + Math.random() * 0.8;   // random lights-out hold (F1 style)
+  s.hold = typeof customHold === 'number' && Number.isFinite(customHold)
+    ? clamp(customHold, 0.4, 2.0)
+    : 0.7 + Math.random() * 0.8;   // random lights-out hold (F1 style)
   s.outAt = 6.0 + s.hold;
   s.raceTime = 0;
   s.finishedCount = 0;
+}
+export function setSessionHold(trackData, holdSeconds) {
+  const s = getSession(trackData);
+  s.hold = clamp(Number(holdSeconds) || 0.85, 0.4, 2.0);
+  s.outAt = 6.0 + s.hold;
+}
+export function syncSessionFromHost(trackData, hostState) {
+  if (!trackData || !hostState) return;
+  const s = getSession(trackData);
+  if (hostState.phase === 'LIGHTS' && s.phase === 'LIGHTS') {
+    s.lightsOn = Math.max(s.lightsOn, Number(hostState.startLights) || 0);
+  } else if (hostState.phase === 'RACING' && s.phase === 'LIGHTS') {
+    s.phase = 'RACING';
+    s.lightsOn = 0;
+    s.raceTime = Number(hostState.raceTime) || 0;
+  }
 }
 function advanceSession(s, dt) {
   s.clock += dt;
@@ -108,8 +126,11 @@ function getProfile(trackData) {
 function freshRace(car, u, trackData) {
   const P = car.userData.physics;
   const isPlayer = !!car.userData.isPlayer;
-  const id = isPlayer ? PLAYER_ID : car.userData;
-  const teamName = isPlayer ? (trackData?.playerTeam || PLAYER_ID.team) : (id.team || PLAYER_ID.team);
+  const driverName = (isPlayer ? (car.userData.driver || PLAYER_ID.driver) : car.userData.driver) || 'YOU';
+  const colorVal = car.userData.color ?? (isPlayer ? PLAYER_ID.color : 0x00d2be);
+  const teamName = isPlayer
+    ? (car.userData.team || trackData?.playerTeam || PLAYER_ID.team)
+    : (car.userData.team || PLAYER_ID.team);
   return {
     u, prevU: u, lateral: 0, latTarget: 0,
     lap: 0, nextCp: 0, lapsCompleted: 0, lapStart: 0,
@@ -121,8 +142,8 @@ function freshRace(car, u, trackData) {
     gap: 0, gapText: '',
     traffic: { blockDist: Infinity, blocker: null, blockLat: 0, blockSpeed: 0, sidePush: 0 },
     entry: {
-      position: 0, name: id.driver || 'YOU', team: teamName,
-      color: '#' + new THREE.Color(id.color ?? PLAYER_ID.color).getHexString(),
+      position: 0, name: driverName, team: teamName,
+      color: '#' + new THREE.Color(colorVal).getHexString(),
       isPlayer, gridSlot: car.userData.gridSlot ?? 0,
       lap: 1, lapsCompleted: 0, progress: 0, gap: 0, gapText: '',
       bestLapTime: null, lastLapTime: null, currentLapTime: 0,
@@ -176,11 +197,13 @@ function ensureRace(car, trackData) {
   }
 }
 
-// --- spawn 7 rivals behind the player ------------------------------------------
-export function initAIRacers(scene, trackData) {
-  resetSession(getSession(trackData));
+// --- spawn rival AI cars (up to 7, configurable for multiplayer grids) --------
+export function initAIRacers(scene, trackData, options = {}) {
+  const count = clamp(options.count ?? 7, 0, TEAMS.length);
+  const startSlot = Math.max(1, options.startSlot ?? 1);
+  resetSession(getSession(trackData), options.holdSeconds);
   const aiList = [];
-  TEAMS.forEach((team, i) => {
+  TEAMS.slice(0, count).forEach((team, i) => {
     const car = createF1Car(team.color, false);
     car.userData.team = team.team;
     car.userData.driver = team.driver;
@@ -191,14 +214,14 @@ export function initAIRacers(scene, trackData) {
       lane: ((i % 3) - 1) * 1.1,       // preferred straight-line lane
     };
     scene.add(car);
-    placeCarOnGrid(car, trackData, i + 1);   // slots 1..7, player holds pole (0)
+    placeCarOnGrid(car, trackData, startSlot + i);
     aiList.push(car);
   });
   return aiList;
 }
 
-export function restartRace(allCars, trackData) {
-  resetSession(getSession(trackData));
+export function restartRace(allCars, trackData, holdSeconds) {
+  resetSession(getSession(trackData), holdSeconds);
   allCars.forEach((car, i) => placeCarOnGrid(car, trackData, car.userData.gridSlot ?? i));
 }
 

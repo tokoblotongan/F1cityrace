@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import {
   CIRCUIT_LIST,
   CircuitConfig,
@@ -8,12 +8,22 @@ import {
 import { initAudio, initHud } from './game/audioHud.js';
 import {
   EngineController,
+  MultiplayerStartOptions,
   RaceFinishResult,
   WeatherType,
   startMonacoEngine,
 } from './game/engine.ts';
+import {
+  ActiveRoomState,
+  LIVERY_PRESETS,
+  LobbyRoomInfo,
+  MultiplayerManager,
+  RaceStartPayload,
+} from './game/multiplayer.ts';
+import { isSupabaseConfigured } from './lib/supabaseClient.ts';
 
 const LAST_NAME_STORAGE_KEY = 'f1_monaco_last_driver_name';
+const LIVERY_STORAGE_KEY = 'f1_multiplayer_livery_color';
 const MAX_HALL_OF_FAME = 10;
 
 interface PodiumRecord {
@@ -83,6 +93,26 @@ function loadLastDriverName(): string {
 function saveLastDriverName(name: string): void {
   try {
     window.localStorage.setItem(LAST_NAME_STORAGE_KEY, name.slice(0, 16));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function loadLastLiveryColor(): string {
+  try {
+    const saved = window.localStorage.getItem(LIVERY_STORAGE_KEY);
+    if (saved && LIVERY_PRESETS.some((p) => p.hex.toLowerCase() === saved.toLowerCase())) {
+      return saved;
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return LIVERY_PRESETS[0].hex;
+}
+
+function saveLastLiveryColor(hex: string): void {
+  try {
+    window.localStorage.setItem(LIVERY_STORAGE_KEY, hex);
   } catch {
     // Ignore storage errors
   }
@@ -355,7 +385,9 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const controllerRef = useRef<EngineController | null>(null);
+  const [mpManager] = useState(() => new MultiplayerManager());
   const [webglError, setWebglError] = useState<string | null>(null);
+  const [gameMode, setGameMode] = useState<'single' | 'multi'>('single');
   const [circuit, setCircuit] = useState<CircuitId>('monaco-gp');
   const [weather, setWeather] = useState<WeatherType>('cerah');
   const [raceStarted, setRaceStarted] = useState(false);
@@ -366,12 +398,27 @@ export default function App() {
   );
   const [finishResult, setFinishResult] = useState<RaceFinishResult | null>(null);
   const [driverName, setDriverName] = useState<string>(() => loadLastDriverName());
+  const [liveryColor, setLiveryColor] = useState<string>(() => loadLastLiveryColor());
   const [savedRecordId, setSavedRecordId] = useState<string | null>(null);
   const [savedDriverName, setSavedDriverName] = useState<string | null>(null);
   const [showHallOfFameModal, setShowHallOfFameModal] = useState(false);
   const [chequeredCountdown, setChequeredCountdown] = useState<number | null>(null);
 
+  const [lobbyStatus, setLobbyStatus] = useState<'IDLE' | 'CONNECTING' | 'CONNECTED' | 'ERROR' | 'UNCONFIGURED'>(() =>
+    isSupabaseConfigured ? 'IDLE' : 'UNCONFIGURED'
+  );
+  const [publicRooms, setPublicRooms] = useState<LobbyRoomInfo[]>([]);
+  const [activeRoom, setActiveRoom] = useState<ActiveRoomState | null>(null);
+  const [roomNameInput, setRoomNameInput] = useState<string>('');
+  const [mpError, setMpError] = useState<string | null>(null);
+  const [mpBusy, setMpBusy] = useState<boolean>(false);
+  const [inMultiplayerRace, setInMultiplayerRace] = useState<boolean>(false);
+
+  const raceStartedRef = useRef(raceStarted);
+  raceStartedRef.current = raceStarted;
+
   const activeCircuit = getCircuitConfig(circuit);
+  const isMultiplayerHost = !!activeRoom && activeRoom.hostId === mpManager.getPlayerId();
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -463,27 +510,258 @@ export default function App() {
     return () => observer.disconnect();
   }, [finishResult, savedDriverName]);
 
+  const launchMultiplayerRace = useCallback(
+    (payload: RaceStartPayload) => {
+      initAudio();
+      setShowWeatherMenu(false);
+      setShowHallOfFameModal(false);
+      setFinishResult(null);
+      setSavedRecordId(null);
+      setSavedDriverName(null);
+      setChequeredCountdown(null);
+      setMpError(null);
+      setCircuit(payload.circuit);
+      setWeather(payload.weather);
+      setRecords(loadStoredRecords(getCircuitConfig(payload.circuit).recordsStorageKey));
+      setInMultiplayerRace(true);
+      setRaceStarted(true);
+
+      const myId = mpManager.getPlayerId();
+      const mySlot = payload.slots.find((s) => s.playerId === myId);
+      const effectiveName =
+        mySlot?.name || driverName.trim() || `DRIVER-${myId.slice(0, 4).toUpperCase()}`;
+      const effectiveColor = mySlot?.liveryColor || liveryColor || '#e10600';
+      const isHostNow = payload.hostId === myId || mpManager.isHost();
+
+      const mpOpts: MultiplayerStartOptions = {
+        isHost: isHostNow,
+        localPlayerId: myId,
+        driverName: effectiveName,
+        liveryColor: effectiveColor,
+        slots: payload.slots,
+        startAtMs: payload.startAtMs,
+        onSendPlayerTelemetry: (pkt) => mpManager.sendPlayerTelemetry(pkt),
+        onSendAiTelemetry: (pkt) => mpManager.sendAiTelemetry(pkt),
+        onHostRestart: () => {
+          void mpManager.startRaceForAll(true).then((restartPayload) => {
+            if (restartPayload) launchMultiplayerRaceRef.current(restartPayload);
+          });
+        },
+      };
+
+      controllerRef.current?.startMultiplayerRace(payload.weather, payload.circuit, mpOpts);
+    },
+    [driverName, liveryColor, mpManager]
+  );
+
+  const launchMultiplayerRaceRef = useRef(launchMultiplayerRace);
+  launchMultiplayerRaceRef.current = launchMultiplayerRace;
+
+  const getRoomCallbacks = useCallback(
+    () => ({
+      onRoomUpdate: (room: ActiveRoomState) => {
+        setActiveRoom(room);
+        if (!raceStartedRef.current) {
+          setCircuit(room.circuit);
+          setWeather(room.weather);
+          setRecords(loadStoredRecords(getCircuitConfig(room.circuit).recordsStorageKey));
+          controllerRef.current?.setCircuit(room.circuit);
+          controllerRef.current?.setWeather(room.weather);
+        }
+      },
+      onRaceStart: (payload: RaceStartPayload) => {
+        launchMultiplayerRaceRef.current(payload);
+      },
+      onRaceRestart: (payload: RaceStartPayload) => {
+        launchMultiplayerRaceRef.current(payload);
+      },
+      onPlayerTelemetry: (pkt: Parameters<EngineController['receiveRemotePlayerTelemetry']>[0]) => {
+        controllerRef.current?.receiveRemotePlayerTelemetry(pkt);
+      },
+      onAiTelemetry: (pkt: Parameters<EngineController['receiveRemoteAiTelemetry']>[0]) => {
+        controllerRef.current?.receiveRemoteAiTelemetry(pkt);
+      },
+      onPlayerLeave: (playerId: string) => {
+        controllerRef.current?.removeRemotePlayer(playerId);
+      },
+      onError: (msg: string) => {
+        setMpError(msg);
+      },
+    }),
+    []
+  );
+
+  // Sync driver identity to MultiplayerManager + 3D preview car
+  useEffect(() => {
+    mpManager.setProfile(driverName, liveryColor);
+    if (!raceStarted) {
+      if (gameMode === 'multi') {
+        const displayName = driverName.trim() || `DRIVER-${mpManager.getPlayerId().slice(0, 4).toUpperCase()}`;
+        controllerRef.current?.setPlayerProfile(displayName, liveryColor);
+      } else {
+        controllerRef.current?.setPlayerProfile('YOU', '#e10600');
+      }
+    }
+  }, [driverName, liveryColor, gameMode, raceStarted, mpManager]);
+
+  // Connect/disconnect global Supabase Presence lobby when browsing Multiplayer rooms
+  useEffect(() => {
+    if (gameMode === 'multi' && !raceStarted) {
+      void mpManager.connectLobby({
+        onRoomsChange: (rooms) => setPublicRooms(rooms),
+        onStatusChange: (status) => setLobbyStatus(status),
+      });
+    } else if (gameMode === 'single' && !activeRoom && !inMultiplayerRace) {
+      void mpManager.disconnectLobby();
+    }
+  }, [gameMode, raceStarted, activeRoom, inMultiplayerRace, mpManager]);
+
+  // Clean up all Realtime channels on unmount
+  useEffect(() => {
+    return () => {
+      void mpManager.dispose();
+    };
+  }, [mpManager]);
+
   const handleSelectCircuit = (cId: CircuitId) => {
     setCircuit(cId);
     setRecords(loadStoredRecords(getCircuitConfig(cId).recordsStorageKey));
     setSavedRecordId(null);
     setSavedDriverName(null);
     controllerRef.current?.setCircuit(cId);
+    if (gameMode === 'multi' && activeRoom && isMultiplayerHost) {
+      void mpManager.updateHostRoomConfig(cId, weather);
+    }
   };
 
   const handleSelectStartWeather = (w: WeatherType) => {
     setWeather(w);
     controllerRef.current?.setWeather(w);
+    if (gameMode === 'multi' && activeRoom && isMultiplayerHost) {
+      void mpManager.updateHostRoomConfig(circuit, w);
+    }
+  };
+
+  const handleDriverNameChange = (val: string) => {
+    const cleaned = val.slice(0, 16);
+    setDriverName(cleaned);
+    saveLastDriverName(cleaned);
+  };
+
+  const handleSelectLivery = (hex: string) => {
+    setLiveryColor(hex);
+    saveLastLiveryColor(hex);
+  };
+
+  const handleCreatePublicRoom = async (e?: FormEvent) => {
+    e?.preventDefault();
+    if (!isSupabaseConfigured || mpBusy) return;
+    setMpBusy(true);
+    setMpError(null);
+    try {
+      const created = await mpManager.createPublicRoom(
+        {
+          roomName: roomNameInput,
+          circuit,
+          weather,
+          driverName,
+          liveryColor,
+        },
+        getRoomCallbacks()
+      );
+      if (created) {
+        setActiveRoom(created);
+      }
+    } finally {
+      setMpBusy(false);
+    }
+  };
+
+  const handleJoinPublicRoom = async (room: LobbyRoomInfo) => {
+    if (!isSupabaseConfigured || mpBusy) return;
+    if (room.playerCount >= room.maxPlayers) {
+      setMpError('This room is already full (8/8 drivers).');
+      return;
+    }
+    setMpBusy(true);
+    setMpError(null);
+    try {
+      const joined = await mpManager.joinPublicRoom(
+        room,
+        { driverName, liveryColor },
+        getRoomCallbacks()
+      );
+      if (joined) {
+        setActiveRoom(joined);
+        setCircuit(joined.circuit);
+        setWeather(joined.weather);
+        setRecords(loadStoredRecords(getCircuitConfig(joined.circuit).recordsStorageKey));
+        controllerRef.current?.setCircuit(joined.circuit);
+        controllerRef.current?.setWeather(joined.weather);
+      }
+    } finally {
+      setMpBusy(false);
+    }
+  };
+
+  const handleLeaveMultiplayerRoom = async () => {
+    setMpError(null);
+    await mpManager.leaveRoom();
+    setActiveRoom(null);
+    if (inMultiplayerRace) {
+      controllerRef.current?.stopMultiplayerToSinglePreview();
+      setInMultiplayerRace(false);
+      setRaceStarted(false);
+      setFinishResult(null);
+      setChequeredCountdown(null);
+      setShowWeatherMenu(false);
+    }
+  };
+
+  const handleHostStartRaceForAll = async () => {
+    if (!activeRoom || !isMultiplayerHost || mpBusy) return;
+    setMpBusy(true);
+    setMpError(null);
+    try {
+      const payload = await mpManager.startRaceForAll(false);
+      if (payload) {
+        launchMultiplayerRace(payload);
+      }
+    } finally {
+      setMpBusy(false);
+    }
+  };
+
+  const handleHostRestartRaceForAll = async (overrideWeather?: WeatherType) => {
+    if (!activeRoom || !isMultiplayerHost) return;
+    initAudio();
+    const targetWeather = overrideWeather ?? weather;
+    if (overrideWeather && overrideWeather !== weather) {
+      setWeather(overrideWeather);
+      await mpManager.updateHostRoomConfig(circuit, overrideWeather, 'RACING');
+    }
+    const payload = await mpManager.startRaceForAll(true);
+    if (payload) {
+      launchMultiplayerRace(payload);
+    }
   };
 
   const handleStartRace = () => {
     initAudio();
     setShowWeatherMenu(false);
+    setInMultiplayerRace(false);
     setRaceStarted(true);
+    controllerRef.current?.setPlayerProfile('YOU', '#e10600');
     controllerRef.current?.startRace(weather, circuit);
   };
 
   const handleRestartWithWeather = (w: WeatherType) => {
+    if (inMultiplayerRace) {
+      if (isMultiplayerHost) {
+        void handleHostRestartRaceForAll(w);
+      }
+      return;
+    }
     initAudio();
     setWeather(w);
     setShowWeatherMenu(false);
@@ -782,18 +1060,43 @@ export default function App() {
           )}
         </button>
 
-        {/* Top-right · Active Weather Badge + quick weather-switch restart menu */}
+        {/* Top-right · Active Weather Badge (+ Multiplayer Room Leave / Single Player Weather Switch) */}
         {raceStarted && (
-          <div className="pointer-events-auto fixed top-[14px] right-[126px] sm:right-[194px] z-20">
+          <div className="pointer-events-auto fixed top-[14px] right-[126px] sm:right-[194px] z-20 flex items-center gap-1.5">
+            {inMultiplayerRace && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  void handleLeaveMultiplayerRoom();
+                }}
+                title="Leave online room and return to lobby"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#2a0c10]/88 border border-[#ff2d1a]/55 hover:border-[#ff2d1a] hover:bg-[#3f1116] text-[#f2efe6] shadow-lg transition cursor-pointer"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-[#22ff88] animate-pulse" aria-hidden="true" />
+                <span className="hidden md:inline text-[10px] font-black tracking-[0.14em] text-[#f2efe6]/85">
+                  #{activeRoom?.roomId || 'LIVE'}
+                </span>
+                <span className="text-[10px] font-black tracking-[0.14em] text-[#ff6a55]">LEAVE</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={(e) => {
                 e.currentTarget.blur();
+                if (inMultiplayerRace) return;
                 setShowWeatherMenu((prev) => !prev);
               }}
-              aria-expanded={showWeatherMenu}
-              title="Track weather & grip — click to switch weather and restart"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#0b0f16]/82 border border-[rgba(242,239,230,0.18)] hover:border-[#00d2be] text-[#f2efe6] shadow-lg transition cursor-pointer"
+              aria-expanded={!inMultiplayerRace && showWeatherMenu}
+              title={
+                inMultiplayerRace
+                  ? 'Active room weather'
+                  : 'Track weather & grip — click to switch weather and restart'
+              }
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#0b0f16]/82 border border-[rgba(242,239,230,0.18)] text-[#f2efe6] shadow-lg transition ${
+                inMultiplayerRace ? 'cursor-default' : 'hover:border-[#00d2be] cursor-pointer'
+              }`}
             >
               <WeatherIcon type={activeWeatherOpt.id} className={`w-3.5 h-3.5 shrink-0 ${activeWeatherOpt.iconColorCls}`} />
               <span className="text-[10px] font-black tracking-[0.14em]">{activeWeatherOpt.shortLabel}</span>
@@ -802,8 +1105,8 @@ export default function App() {
               </span>
             </button>
 
-            {showWeatherMenu && (
-              <div className="mt-1.5 w-[228px] rounded-xl bg-[#0d121a]/95 border border-white/20 p-2 shadow-2xl backdrop-blur-md">
+            {!inMultiplayerRace && showWeatherMenu && (
+              <div className="absolute top-full right-0 mt-1.5 w-[228px] rounded-xl bg-[#0d121a]/95 border border-white/20 p-2 shadow-2xl backdrop-blur-md">
                 <div className="px-2 pb-1.5 mb-1.5 border-b border-white/10 text-[9px] font-black tracking-[0.18em] text-[#f2efe6]/55">
                   SWITCH WEATHER &amp; RESTART
                 </div>
@@ -1010,39 +1313,64 @@ export default function App() {
             {renderHallOfFameRows(true)}
           </div>
 
-          {/* Weather switcher row before Restart */}
-          <div className="mt-3.5 rounded-lg border border-white/12 bg-[#070a10]/65 px-3 py-2 text-left">
-            <div className="text-[9px] font-black tracking-[0.2em] text-[#f2efe6]/55 mb-1.5">
-              RESTART IN DIFFERENT WEATHER
+          {/* Weather switcher row before Restart (Single Player, or Host in Online Multiplayer) */}
+          {(!inMultiplayerRace || isMultiplayerHost) && (
+            <div className="mt-3.5 rounded-lg border border-white/12 bg-[#070a10]/65 px-3 py-2 text-left">
+              <div className="text-[9px] font-black tracking-[0.2em] text-[#f2efe6]/55 mb-1.5">
+                {inMultiplayerRace ? 'HOST: RESTART FOR ALL IN DIFFERENT WEATHER' : 'RESTART IN DIFFERENT WEATHER'}
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {WEATHER_OPTIONS.map((opt) => {
+                  const isSelected = opt.id === weather;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        handleRestartWithWeather(opt.id);
+                      }}
+                      className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md border text-[10px] font-black tracking-[0.1em] transition cursor-pointer ${
+                        isSelected
+                          ? 'border-[#00d2be] bg-[#00d2be]/15 text-white'
+                          : 'border-white/15 bg-white/[0.04] hover:bg-white/10 text-[#f2efe6]/80'
+                      }`}
+                    >
+                      <WeatherIcon type={opt.id} className={`w-3.5 h-3.5 shrink-0 ${opt.iconColorCls}`} />
+                      <span className="truncate">{opt.shortLabel}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <div className="grid grid-cols-3 gap-1.5">
-              {WEATHER_OPTIONS.map((opt) => {
-                const isSelected = opt.id === weather;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={(e) => {
-                      e.currentTarget.blur();
-                      handleRestartWithWeather(opt.id);
-                    }}
-                    className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md border text-[10px] font-black tracking-[0.1em] transition cursor-pointer ${
-                      isSelected
-                        ? 'border-[#00d2be] bg-[#00d2be]/15 text-white'
-                        : 'border-white/15 bg-white/[0.04] hover:bg-white/10 text-[#f2efe6]/80'
-                    }`}
-                  >
-                    <WeatherIcon type={opt.id} className={`w-3.5 h-3.5 shrink-0 ${opt.iconColorCls}`} />
-                    <span className="truncate">{opt.shortLabel}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          )}
 
-          <button id="race-again">
-            RACE AGAIN <span className="key-cap">R</span>
-          </button>
+          {inMultiplayerRace && !isMultiplayerHost && (
+            <div className="mt-3.5 rounded-lg border border-[#00d2be]/30 bg-[#00d2be]/10 px-3 py-2 text-[11px] font-bold tracking-[0.14em] text-[#5eead4]">
+              ONLINE ROOM #{activeRoom?.roomId} · WAITING FOR HOST TO RESTART…
+            </div>
+          )}
+
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2.5">
+            <button
+              id="race-again"
+              hidden={inMultiplayerRace && !isMultiplayerHost}
+            >
+              {inMultiplayerRace ? 'RESTART FOR ALL' : 'RACE AGAIN'} <span className="key-cap">R</span>
+            </button>
+            {inMultiplayerRace && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  void handleLeaveMultiplayerRoom();
+                }}
+                className="px-5 py-2.5 rounded-lg border border-[#ff2d1a]/55 bg-[#2a0c10]/85 hover:bg-[#3f1116] text-xs font-black tracking-[0.18em] text-[#f2efe6] transition cursor-pointer"
+              >
+                LEAVE ONLINE ROOM
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1069,42 +1397,67 @@ export default function App() {
             </div>
           </div>
 
-          <div className="mt-3.5 rounded-lg border border-white/12 bg-[#070a10]/65 px-3 py-2 text-left">
-            <div className="text-[9px] font-black tracking-[0.2em] text-[#f2efe6]/55 mb-1.5">
-              RESTART IN DIFFERENT WEATHER
+          {(!inMultiplayerRace || isMultiplayerHost) && (
+            <div className="mt-3.5 rounded-lg border border-white/12 bg-[#070a10]/65 px-3 py-2 text-left">
+              <div className="text-[9px] font-black tracking-[0.2em] text-[#f2efe6]/55 mb-1.5">
+                {inMultiplayerRace ? 'HOST: RESTART FOR ALL IN DIFFERENT WEATHER' : 'RESTART IN DIFFERENT WEATHER'}
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {WEATHER_OPTIONS.map((opt) => {
+                  const isSelected = opt.id === weather;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        handleRestartWithWeather(opt.id);
+                      }}
+                      className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md border text-[10px] font-black tracking-[0.1em] transition cursor-pointer ${
+                        isSelected
+                          ? 'border-[#00d2be] bg-[#00d2be]/15 text-white'
+                          : 'border-white/15 bg-white/[0.04] hover:bg-white/10 text-[#f2efe6]/80'
+                      }`}
+                    >
+                      <WeatherIcon type={opt.id} className={`w-3.5 h-3.5 shrink-0 ${opt.iconColorCls}`} />
+                      <span className="truncate">{opt.shortLabel}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <div className="grid grid-cols-3 gap-1.5">
-              {WEATHER_OPTIONS.map((opt) => {
-                const isSelected = opt.id === weather;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={(e) => {
-                      e.currentTarget.blur();
-                      handleRestartWithWeather(opt.id);
-                    }}
-                    className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md border text-[10px] font-black tracking-[0.1em] transition cursor-pointer ${
-                      isSelected
-                        ? 'border-[#00d2be] bg-[#00d2be]/15 text-white'
-                        : 'border-white/15 bg-white/[0.04] hover:bg-white/10 text-[#f2efe6]/80'
-                    }`}
-                  >
-                    <WeatherIcon type={opt.id} className={`w-3.5 h-3.5 shrink-0 ${opt.iconColorCls}`} />
-                    <span className="truncate">{opt.shortLabel}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          )}
 
-          <button id="dnf-race-again">
-            RACE AGAIN <span className="key-cap">R</span>
-          </button>
+          {inMultiplayerRace && !isMultiplayerHost && (
+            <div className="mt-3.5 rounded-lg border border-[#00d2be]/30 bg-[#00d2be]/10 px-3 py-2 text-[11px] font-bold tracking-[0.14em] text-[#5eead4]">
+              ONLINE ROOM #{activeRoom?.roomId} · WAITING FOR HOST TO RESTART…
+            </div>
+          )}
+
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2.5">
+            <button
+              id="dnf-race-again"
+              hidden={inMultiplayerRace && !isMultiplayerHost}
+            >
+              {inMultiplayerRace ? 'RESTART FOR ALL' : 'RACE AGAIN'} <span className="key-cap">R</span>
+            </button>
+            {inMultiplayerRace && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  void handleLeaveMultiplayerRoom();
+                }}
+                className="px-5 py-2.5 rounded-lg border border-[#ff2d1a]/55 bg-[#2a0c10]/85 hover:bg-[#3f1116] text-xs font-black tracking-[0.18em] text-[#f2efe6] transition cursor-pointer"
+              >
+                LEAVE ONLINE ROOM
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Start Screen · Circuit & Weather Conditions Selection */}
+      {/* Start Screen · Single Player / Online Multiplayer + Circuit & Weather Selection */}
       {!raceStarted && !webglError && (
         <div
           role="dialog"
@@ -1112,7 +1465,7 @@ export default function App() {
           aria-labelledby="start-title"
           className="fixed inset-0 z-30 flex items-center justify-center bg-gradient-to-b from-[#06090f]/74 via-[#06090f]/58 to-[#06090f]/82 backdrop-blur-[3px] p-3 sm:p-4"
         >
-          <div className="w-full max-w-[840px] max-h-[94vh] overflow-y-auto rounded-2xl bg-[#0b0f16]/92 border border-white/18 border-t-[3px] border-t-[#e10600] px-4 py-4 sm:px-6 sm:py-5 shadow-[0_28px_80px_rgba(0,0,0,0.78)] text-[#f2efe6]">
+          <div className="w-full max-w-[880px] max-h-[94vh] overflow-y-auto rounded-2xl bg-[#0b0f16]/92 border border-white/18 border-t-[3px] border-t-[#e10600] px-4 py-4 sm:px-6 sm:py-5 shadow-[0_28px_80px_rgba(0,0,0,0.78)] text-[#f2efe6]">
             <div className="text-center">
               <div className="inline-flex items-center gap-2 px-3 py-0.5 rounded bg-[#e10600]/15 border border-[#e10600]/45 text-[10px] font-black tracking-[0.26em] text-[#ff6a55]">
                 {activeCircuit.circuitTitle} · {activeCircuit.lengthLabel} ·{' '}
@@ -1124,156 +1477,661 @@ export default function App() {
               >
                 {activeCircuit.gpTitle}
               </h1>
-            </div>
 
-            {/* 1 · SELECT CIRCUIT */}
-            <div className="mt-3.5">
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <p className="text-[11px] font-black tracking-[0.24em] text-[#00d2be] uppercase">
-                  SELECT CIRCUIT
-                </p>
-                <span className="text-[10px] font-bold tracking-[0.14em] text-[#f2efe6]/50">
-                  2 STREET CIRCUITS
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {CIRCUIT_LIST.map((cCfg, idx) => {
-                  const selected = circuit === cCfg.id;
-                  const isSalatiga = cCfg.id === 'salatiga-gp';
-                  const activeCls = isSalatiga
-                    ? 'border-[#22ff88] bg-gradient-to-b from-[#22ff88]/16 via-[#0d1614]/92 to-[#0b0f16]/95 shadow-[0_0_26px_rgba(34,255,136,0.28)]'
-                    : 'border-[#00d2be] bg-gradient-to-b from-[#00d2be]/16 via-[#0c141d]/92 to-[#0b0f16]/95 shadow-[0_0_26px_rgba(0,210,190,0.28)]';
-                  const tagCls = isSalatiga
-                    ? 'bg-[#22ff88]/18 text-[#4ade80] border-[#22ff88]/45'
-                    : 'bg-[#00d2be]/18 text-[#5eead4] border-[#00d2be]/45';
-
-                  return (
-                    <button
-                      key={cCfg.id}
-                      type="button"
-                      onClick={(e) => {
-                        e.currentTarget.blur();
-                        handleSelectCircuit(cCfg.id);
-                      }}
-                      aria-pressed={selected}
-                      className={`group relative flex flex-col justify-between text-left rounded-xl border p-3.5 transition cursor-pointer ${
-                        selected
-                          ? activeCls
-                          : 'border-white/15 bg-[#0e141e]/82 hover:border-white/35 hover:bg-[#131b28]/92'
+              {/* Mode Switcher: SINGLE PLAYER / ONLINE MULTIPLAYER */}
+              <div className="mt-3 inline-grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-[#06090f]/85 border border-white/15">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    if (activeRoom) void handleLeaveMultiplayerRoom();
+                    setGameMode('single');
+                  }}
+                  aria-pressed={gameMode === 'single'}
+                  className={`px-4 py-2 rounded-lg text-[11px] font-black tracking-[0.18em] transition cursor-pointer ${
+                    gameMode === 'single'
+                      ? 'bg-gradient-to-r from-[#ff2d1a] to-[#e10600] text-[#f2efe6] shadow-[0_4px_16px_rgba(225,6,0,0.4)]'
+                      : 'text-[#f2efe6]/65 hover:text-[#f2efe6] hover:bg-white/5'
+                  }`}
+                >
+                  SINGLE PLAYER
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    setGameMode('multi');
+                  }}
+                  aria-pressed={gameMode === 'multi'}
+                  className={`flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-[11px] font-black tracking-[0.18em] transition cursor-pointer ${
+                    gameMode === 'multi'
+                      ? 'bg-gradient-to-r from-[#00d2be] to-[#0284c7] text-[#06090f] shadow-[0_4px_16px_rgba(0,210,190,0.35)]'
+                      : 'text-[#f2efe6]/65 hover:text-[#f2efe6] hover:bg-white/5'
+                  }`}
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      isSupabaseConfigured ? 'bg-[#22ff88]' : 'bg-[#ffb020]'
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <span>ONLINE MULTIPLAYER</span>
+                  {publicRooms.length > 0 && (
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[9px] font-black tabular-nums ${
+                        gameMode === 'multi' ? 'bg-[#06090f]/25 text-[#06090f]' : 'bg-[#00d2be]/20 text-[#5eead4]'
                       }`}
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="text-[10px] font-black tracking-[0.2em] text-[#f2efe6]/55">
-                            {idx + 1}. {cCfg.gpTitle}
-                          </div>
-                          <h2 className="text-sm sm:text-base font-black italic tracking-wide text-[#f2efe6]">
-                            {cCfg.circuitTitle}
-                          </h2>
-                        </div>
-                        <span
-                          className={`shrink-0 px-2 py-0.5 rounded border text-[9px] font-black tracking-[0.12em] ${
+                      {publicRooms.length}
+                    </span>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {gameMode === 'single' ? (
+              <>
+                {/* 1 · SELECT CIRCUIT */}
+                <div className="mt-3.5">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <p className="text-[11px] font-black tracking-[0.24em] text-[#00d2be] uppercase">
+                      SELECT CIRCUIT
+                    </p>
+                    <span className="text-[10px] font-bold tracking-[0.14em] text-[#f2efe6]/50">
+                      2 STREET CIRCUITS
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {CIRCUIT_LIST.map((cCfg, idx) => {
+                      const selected = circuit === cCfg.id;
+                      const isSalatiga = cCfg.id === 'salatiga-gp';
+                      const activeCls = isSalatiga
+                        ? 'border-[#22ff88] bg-gradient-to-b from-[#22ff88]/16 via-[#0d1614]/92 to-[#0b0f16]/95 shadow-[0_0_26px_rgba(34,255,136,0.28)]'
+                        : 'border-[#00d2be] bg-gradient-to-b from-[#00d2be]/16 via-[#0c141d]/92 to-[#0b0f16]/95 shadow-[0_0_26px_rgba(0,210,190,0.28)]';
+                      const tagCls = isSalatiga
+                        ? 'bg-[#22ff88]/18 text-[#4ade80] border-[#22ff88]/45'
+                        : 'bg-[#00d2be]/18 text-[#5eead4] border-[#00d2be]/45';
+
+                      return (
+                        <button
+                          key={cCfg.id}
+                          type="button"
+                          onClick={(e) => {
+                            e.currentTarget.blur();
+                            handleSelectCircuit(cCfg.id);
+                          }}
+                          aria-pressed={selected}
+                          className={`group relative flex flex-col justify-between text-left rounded-xl border p-3.5 transition cursor-pointer ${
                             selected
-                              ? 'bg-[#22ff88]/20 text-[#22ff88] border-[#22ff88]/55'
-                              : tagCls
+                              ? activeCls
+                              : 'border-white/15 bg-[#0e141e]/82 hover:border-white/35 hover:bg-[#131b28]/92'
                           }`}
                         >
-                          {selected ? '✓ SELECTED' : cCfg.lengthLabel}
-                        </span>
-                      </div>
-
-                      <div className="my-2 rounded-lg bg-[#06090f]/75 border border-white/10 px-2 py-1">
-                        <CircuitSvgMap config={cCfg} selected={selected} />
-                      </div>
-
-                      <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/10">
-                        <span className="text-[11px] font-semibold tracking-[0.03em] text-[#f2efe6]/80">
-                          {cCfg.subtitle}
-                        </span>
-                        <span className={`shrink-0 text-[9px] font-black tracking-[0.14em] ${selected ? 'text-[#22ff88]' : 'text-[#f2efe6]/45'}`}>
-                          {selected ? 'PREVIEWING' : 'SELECT'}
-                        </span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* 2 · SELECT WEATHER CONDITIONS */}
-            <div className="mt-4">
-              <p className="text-[11px] font-black tracking-[0.24em] text-[#00d2be] uppercase mb-2">
-                SELECT WEATHER CONDITIONS
-              </p>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                {WEATHER_OPTIONS.map((opt) => {
-                  const selected = weather === opt.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={(e) => {
-                        e.currentTarget.blur();
-                        handleSelectStartWeather(opt.id);
-                      }}
-                      aria-pressed={selected}
-                      className={`relative flex flex-col justify-between text-left rounded-xl border p-3 transition cursor-pointer ${
-                        selected
-                          ? opt.activeCardCls
-                          : 'border-white/15 bg-[#0e141e]/80 hover:border-white/35 hover:bg-[#131b28]/90'
-                      }`}
-                    >
-                      <div>
-                        <div className="flex items-start justify-between gap-2">
-                          <div className={`p-1.5 rounded-lg bg-white/[0.06] border border-white/10 ${opt.iconColorCls}`}>
-                            <WeatherIcon type={opt.id} className="w-5 h-5" />
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="text-[10px] font-black tracking-[0.2em] text-[#f2efe6]/55">
+                                {idx + 1}. {cCfg.gpTitle}
+                              </div>
+                              <h2 className="text-sm sm:text-base font-black italic tracking-wide text-[#f2efe6]">
+                                {cCfg.circuitTitle}
+                              </h2>
+                            </div>
+                            <span
+                              className={`shrink-0 px-2 py-0.5 rounded border text-[9px] font-black tracking-[0.12em] ${
+                                selected
+                                  ? 'bg-[#22ff88]/20 text-[#22ff88] border-[#22ff88]/55'
+                                  : tagCls
+                              }`}
+                            >
+                              {selected ? '✓ SELECTED' : cCfg.lengthLabel}
+                            </span>
                           </div>
-                          <span className={`px-2 py-0.5 rounded border text-[9px] font-black tracking-[0.12em] ${opt.badgeCls}`}>
-                            {opt.gripBadge}
+
+                          <div className="my-2 rounded-lg bg-[#06090f]/75 border border-white/10 px-2 py-1">
+                            <CircuitSvgMap config={cCfg} selected={selected} />
+                          </div>
+
+                          <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/10">
+                            <span className="text-[11px] font-semibold tracking-[0.03em] text-[#f2efe6]/80">
+                              {cCfg.subtitle}
+                            </span>
+                            <span className={`shrink-0 text-[9px] font-black tracking-[0.14em] ${selected ? 'text-[#22ff88]' : 'text-[#f2efe6]/45'}`}>
+                              {selected ? 'PREVIEWING' : 'SELECT'}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 2 · SELECT WEATHER CONDITIONS */}
+                <div className="mt-4">
+                  <p className="text-[11px] font-black tracking-[0.24em] text-[#00d2be] uppercase mb-2">
+                    SELECT WEATHER CONDITIONS
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    {WEATHER_OPTIONS.map((opt) => {
+                      const selected = weather === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={(e) => {
+                            e.currentTarget.blur();
+                            handleSelectStartWeather(opt.id);
+                          }}
+                          aria-pressed={selected}
+                          className={`relative flex flex-col justify-between text-left rounded-xl border p-3 transition cursor-pointer ${
+                            selected
+                              ? opt.activeCardCls
+                              : 'border-white/15 bg-[#0e141e]/80 hover:border-white/35 hover:bg-[#131b28]/90'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-start justify-between gap-2">
+                              <div className={`p-1.5 rounded-lg bg-white/[0.06] border border-white/10 ${opt.iconColorCls}`}>
+                                <WeatherIcon type={opt.id} className="w-5 h-5" />
+                              </div>
+                              <span className={`px-2 py-0.5 rounded border text-[9px] font-black tracking-[0.12em] ${opt.badgeCls}`}>
+                                {opt.gripBadge}
+                              </span>
+                            </div>
+                            <h3 className="mt-2 text-sm font-black italic tracking-wide text-[#f2efe6]">
+                              {opt.label}
+                            </h3>
+                            <div className="text-[10px] font-bold tracking-[0.06em] text-[#00d2be]">
+                              {opt.subtitle}
+                            </div>
+                            <p className="mt-1 text-[11px] leading-snug text-[#f2efe6]/70">
+                              {opt.description}
+                            </p>
+                          </div>
+
+                          <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[9px] font-black tracking-[0.16em]">
+                            <span className={selected ? 'text-[#22ff88]' : 'text-[#f2efe6]/45'}>
+                              {selected ? '✓ SELECTED' : 'CLICK TO PREVIEW'}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3 pt-3.5 border-t border-white/10">
+                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-4 gap-y-1 text-[10px] font-bold tracking-[0.12em] text-[#f2efe6]/60">
+                    <span><b className="text-[#f2efe6]">W/S</b> THROTTLE·BRAKE</span>
+                    <span><b className="text-[#f2efe6]">A/D</b> STEER</span>
+                    <span><b className="text-[#f2efe6]">SPACE</b> DRS</span>
+                    <span><b className="text-[#f2efe6]">C</b> CAM</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.currentTarget.blur();
+                      handleStartRace();
+                    }}
+                    className="w-full sm:w-auto px-8 py-3 rounded-xl bg-gradient-to-r from-[#ff2d1a] to-[#e10600] text-[#f2efe6] text-sm font-black tracking-[0.24em] shadow-[0_10px_32px_rgba(225,6,0,0.5)] hover:brightness-110 active:scale-95 transition cursor-pointer"
+                  >
+                    START RACE
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* ONLINE MULTIPLAYER VIEW */
+              <div className="mt-4 space-y-3.5">
+                {!isSupabaseConfigured && (
+                  <div className="rounded-xl border border-[#ffb020]/55 bg-[#ffb020]/12 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs font-bold text-[#fde68a]">
+                      Configure <code className="px-1.5 py-0.5 rounded bg-black/40 font-mono">VITE_SUPABASE_URL</code> &amp;{' '}
+                      <code className="px-1.5 py-0.5 rounded bg-black/40 font-mono">VITE_SUPABASE_ANON_KEY</code>
+                    </div>
+                    <span className="text-[10px] font-black tracking-[0.14em] text-[#ffb020]">
+                      SINGLE PLAYER READY
+                    </span>
+                  </div>
+                )}
+
+                {mpError && (
+                  <div className="rounded-xl border border-[#ff2d1a]/55 bg-[#ff2d1a]/15 px-4 py-2 text-xs font-bold text-[#fca5a5]">
+                    {mpError}
+                  </div>
+                )}
+
+                {/* Driver Identity & Car Livery Picker */}
+                <div className="rounded-xl border border-white/15 bg-[#070b12]/80 p-3.5">
+                  <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 items-center">
+                    <div>
+                      <label className="block text-[10px] font-black tracking-[0.2em] text-[#00d2be] mb-1.5">
+                        DRIVER NAME
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={16}
+                        value={driverName}
+                        onChange={(e) => handleDriverNameChange(e.target.value)}
+                        onKeyDown={(e) => e.nativeEvent.stopPropagation()}
+                        onKeyUp={(e) => e.nativeEvent.stopPropagation()}
+                        placeholder="ENTER DRIVER NAME"
+                        className="w-full rounded-lg bg-[#101723] border border-white/20 px-3 py-2 text-xs font-bold tracking-[0.1em] text-[#f2efe6] placeholder:text-[#f2efe6]/35 focus:outline-none focus:border-[#00d2be]"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <span className="text-[10px] font-black tracking-[0.2em] text-[#00d2be]">
+                          CAR LIVERY COLOR
+                        </span>
+                        <span className="text-[10px] font-bold text-[#f2efe6]/60">
+                          {LIVERY_PRESETS.find((p) => p.hex === liveryColor)?.label || 'Custom'}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {LIVERY_PRESETS.map((preset) => {
+                          const isChosen = preset.hex.toLowerCase() === liveryColor.toLowerCase();
+                          return (
+                            <button
+                              key={preset.hex}
+                              type="button"
+                              title={preset.label}
+                              aria-label={`Select ${preset.label} livery`}
+                              aria-pressed={isChosen}
+                              onClick={(e) => {
+                                e.currentTarget.blur();
+                                handleSelectLivery(preset.hex);
+                              }}
+                              style={{ backgroundColor: preset.hex }}
+                              className={`w-7 h-7 rounded-lg transition cursor-pointer ${
+                                isChosen
+                                  ? 'ring-2 ring-[#f2efe6] ring-offset-2 ring-offset-[#070b12] scale-110 shadow-lg'
+                                  : 'opacity-75 hover:opacity-100 border border-white/25'
+                              }`}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {!activeRoom ? (
+                  /* LOBBY: CREATE ROOM + PUBLIC ROOM BROWSER */
+                  <div className="grid grid-cols-1 md:grid-cols-[0.95fr_1.05fr] gap-3.5">
+                    {/* Create Public Room Panel */}
+                    <form
+                      onSubmit={handleCreatePublicRoom}
+                      className="rounded-xl border border-white/15 bg-[#0e141e]/85 p-3.5 flex flex-col justify-between space-y-3"
+                    >
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-black tracking-[0.22em] text-[#00d2be]">
+                            HOST A PUBLIC RACE
+                          </span>
+                          <span className="text-[9px] font-bold tracking-[0.14em] text-[#f2efe6]/50">
+                            UP TO 8 DRIVERS
                           </span>
                         </div>
-                        <h3 className="mt-2 text-sm font-black italic tracking-wide text-[#f2efe6]">
-                          {opt.label}
-                        </h3>
-                        <div className="text-[10px] font-bold tracking-[0.06em] text-[#00d2be]">
-                          {opt.subtitle}
+
+                        <div>
+                          <label className="block text-[9px] font-black tracking-[0.18em] text-[#f2efe6]/55 mb-1">
+                            ROOM NAME (OPTIONAL)
+                          </label>
+                          <input
+                            type="text"
+                            maxLength={24}
+                            value={roomNameInput}
+                            onChange={(e) => setRoomNameInput(e.target.value)}
+                            onKeyDown={(e) => e.nativeEvent.stopPropagation()}
+                            onKeyUp={(e) => e.nativeEvent.stopPropagation()}
+                            placeholder="E.G. SALATIGA NIGHT GP"
+                            className="w-full rounded-lg bg-[#080c12] border border-white/18 px-3 py-2 text-xs font-bold tracking-[0.06em] text-[#f2efe6] placeholder:text-[#f2efe6]/30 focus:outline-none focus:border-[#00d2be]"
+                          />
                         </div>
-                        <p className="mt-1 text-[11px] leading-snug text-[#f2efe6]/70">
-                          {opt.description}
-                        </p>
+
+                        <div>
+                          <div className="text-[9px] font-black tracking-[0.18em] text-[#f2efe6]/55 mb-1">
+                            CIRCUIT
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {CIRCUIT_LIST.map((cCfg) => {
+                              const sel = circuit === cCfg.id;
+                              return (
+                                <button
+                                  key={cCfg.id}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.currentTarget.blur();
+                                    handleSelectCircuit(cCfg.id);
+                                  }}
+                                  className={`px-2.5 py-2 rounded-lg border text-left transition cursor-pointer ${
+                                    sel
+                                      ? 'border-[#00d2be] bg-[#00d2be]/15 text-white'
+                                      : 'border-white/12 bg-white/[0.03] hover:bg-white/10 text-[#f2efe6]/75'
+                                  }`}
+                                >
+                                  <div className="text-[10px] font-black tracking-[0.1em] truncate">{cCfg.gpTitle}</div>
+                                  <div className="text-[9px] text-[#f2efe6]/55 truncate">{cCfg.lengthLabel}</div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-[9px] font-black tracking-[0.18em] text-[#f2efe6]/55 mb-1">
+                            WEATHER
+                          </div>
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {WEATHER_OPTIONS.map((opt) => {
+                              const sel = weather === opt.id;
+                              return (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.currentTarget.blur();
+                                    handleSelectStartWeather(opt.id);
+                                  }}
+                                  className={`flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg border text-[10px] font-black tracking-[0.08em] transition cursor-pointer ${
+                                    sel
+                                      ? 'border-[#00d2be] bg-[#00d2be]/15 text-white'
+                                      : 'border-white/12 bg-white/[0.03] hover:bg-white/10 text-[#f2efe6]/75'
+                                  }`}
+                                >
+                                  <WeatherIcon type={opt.id} className={`w-3.5 h-3.5 shrink-0 ${opt.iconColorCls}`} />
+                                  <span>{opt.shortLabel}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </div>
 
-                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[9px] font-black tracking-[0.16em]">
-                        <span className={selected ? 'text-[#22ff88]' : 'text-[#f2efe6]/45'}>
-                          {selected ? '✓ SELECTED' : 'CLICK TO PREVIEW'}
+                      <button
+                        type="submit"
+                        disabled={!isSupabaseConfigured || mpBusy}
+                        className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#ff2d1a] to-[#e10600] text-[#f2efe6] text-xs font-black tracking-[0.2em] shadow-[0_8px_24px_rgba(225,6,0,0.4)] hover:brightness-110 active:scale-95 disabled:opacity-45 disabled:cursor-not-allowed transition cursor-pointer"
+                      >
+                        {mpBusy ? 'CREATING ROOM…' : 'CREATE PUBLIC ROOM'}
+                      </button>
+                    </form>
+
+                    {/* Active Public Rooms Browser */}
+                    <div className="rounded-xl border border-white/15 bg-[#0e141e]/85 p-3.5 flex flex-col">
+                      <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-white/10">
+                        <span className="text-[11px] font-black tracking-[0.22em] text-[#00d2be]">
+                          ACTIVE PUBLIC ROOMS
+                        </span>
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded border text-[9px] font-black tracking-[0.14em] ${
+                            lobbyStatus === 'CONNECTED'
+                              ? 'border-[#22ff88]/45 bg-[#22ff88]/12 text-[#4ade80]'
+                              : lobbyStatus === 'CONNECTING'
+                                ? 'border-[#00d2be]/45 bg-[#00d2be]/12 text-[#5eead4]'
+                                : 'border-[#ffb020]/45 bg-[#ffb020]/12 text-[#fde68a]'
+                          }`}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-current" aria-hidden="true" />
+                          {lobbyStatus === 'CONNECTED'
+                            ? 'LIVE PRESENCE'
+                            : lobbyStatus === 'CONNECTING'
+                              ? 'CONNECTING'
+                              : lobbyStatus}
                         </span>
                       </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
 
-            <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3 pt-3.5 border-t border-white/10">
-              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-4 gap-y-1 text-[10px] font-bold tracking-[0.12em] text-[#f2efe6]/60">
-                <span><b className="text-[#f2efe6]">W/S</b> THROTTLE·BRAKE</span>
-                <span><b className="text-[#f2efe6]">A/D</b> STEER</span>
-                <span><b className="text-[#f2efe6]">SPACE</b> DRS</span>
-                <span><b className="text-[#f2efe6]">C</b> CAM</span>
+                      {publicRooms.length === 0 ? (
+                        <div className="flex-1 min-h-[190px] grid place-items-center text-center px-4">
+                          <div className="space-y-1.5">
+                            <div className="text-xs font-black tracking-[0.16em] text-[#f2efe6]/70">
+                              NO ACTIVE PUBLIC ROOMS
+                            </div>
+                            <p className="text-[11px] text-[#f2efe6]/45 max-w-[260px]">
+                              Create a public room on the left — anyone opening this game will see it appear live here.
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
+                          {publicRooms.map((room) => {
+                            const cCfg = getCircuitConfig(room.circuit);
+                            const wOpt = WEATHER_OPTIONS.find((o) => o.id === room.weather) || WEATHER_OPTIONS[0];
+                            const full = room.playerCount >= room.maxPlayers;
+                            return (
+                              <div
+                                key={room.roomId}
+                                className="flex items-center justify-between gap-2 rounded-lg border border-white/12 bg-[#080c12]/90 px-3 py-2.5"
+                              >
+                                <div className="min-w-0 space-y-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-black tracking-wide text-[#f2efe6] truncate">
+                                      {room.roomName}
+                                    </span>
+                                    <span className="px-1.5 py-0.5 rounded bg-white/10 text-[9px] font-mono font-bold text-[#f2efe6]/75">
+                                      #{room.roomId}
+                                    </span>
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[8px] font-black tracking-[0.12em] ${
+                                        room.status === 'RACING'
+                                          ? 'bg-[#ffb020]/20 text-[#fbbf24]'
+                                          : 'bg-[#22ff88]/20 text-[#4ade80]'
+                                      }`}
+                                    >
+                                      {room.status}
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] font-semibold text-[#f2efe6]/60">
+                                    <span>HOST: <b className="text-[#f2efe6]/85">{room.hostName}</b></span>
+                                    <span className="text-[#00d2be]">{cCfg.id === 'salatiga-gp' ? 'Salatiga' : 'Monaco'}</span>
+                                    <span>{wOpt.shortLabel}</span>
+                                    <span className="font-mono text-[#f2efe6]/85">
+                                      {room.playerCount}/{room.maxPlayers} DRIVERS
+                                    </span>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={full || mpBusy}
+                                  onClick={(e) => {
+                                    e.currentTarget.blur();
+                                    void handleJoinPublicRoom(room);
+                                  }}
+                                  className="shrink-0 px-3.5 py-2 rounded-lg bg-[#00d2be] hover:bg-[#2ee6d3] text-[#06090f] text-[10px] font-black tracking-[0.16em] disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                                >
+                                  {full ? 'FULL' : 'JOIN'}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  /* INSIDE A PUBLIC ROOM: WAITING GRID & HOST CONTROLS */
+                  <div className="rounded-xl border border-[#00d2be]/40 bg-[#0b121c]/90 p-4 space-y-3.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-white/10">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm sm:text-base font-black italic tracking-wide text-[#f2efe6]">
+                          {activeRoom.roomName}
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-white/10 font-mono text-[10px] font-bold text-[#5eead4]">
+                          #{activeRoom.roomId}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded border text-[9px] font-black tracking-[0.14em] ${
+                            isMultiplayerHost
+                              ? 'border-[#d8b24a]/60 bg-[#d8b24a]/15 text-[#f3d479]'
+                              : 'border-[#00d2be]/45 bg-[#00d2be]/15 text-[#5eead4]'
+                          }`}
+                        >
+                          {isMultiplayerHost ? 'YOU ARE HOST' : 'GUEST DRIVER'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.currentTarget.blur();
+                          void handleLeaveMultiplayerRoom();
+                        }}
+                        className="px-3 py-1.5 rounded-lg border border-[#ff2d1a]/50 bg-[#2a0c10]/80 hover:bg-[#3f1116] text-[10px] font-black tracking-[0.16em] text-[#ff6a55] transition cursor-pointer"
+                      >
+                        LEAVE ROOM
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-[1.05fr_0.95fr] gap-3.5">
+                      {/* Joined Drivers Grid */}
+                      <div className="rounded-lg border border-white/12 bg-[#070a10]/80 p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[10px] font-black tracking-[0.2em] text-[#00d2be]">
+                            STARTING GRID ({activeRoom.members.length}/8 HUMAN)
+                          </span>
+                          <span className="text-[9px] font-bold text-[#f2efe6]/55">
+                            +{Math.max(0, 8 - activeRoom.members.length)} AI FILL
+                          </span>
+                        </div>
+                        <div className="space-y-1.5 max-h-[210px] overflow-y-auto pr-1">
+                          {activeRoom.members.map((m) => {
+                            const isMe = m.playerId === mpManager.getPlayerId();
+                            return (
+                              <div
+                                key={m.playerId}
+                                className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border text-xs ${
+                                  isMe
+                                    ? 'border-[#00d2be]/60 bg-[#00d2be]/12'
+                                    : 'border-white/10 bg-white/[0.03]'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="font-mono text-[10px] font-black text-[#f2efe6]/55 w-5">
+                                    P{m.gridSlot + 1}
+                                  </span>
+                                  <span
+                                    className="w-3 h-3 rounded-sm shrink-0 border border-white/30"
+                                    style={{ backgroundColor: m.liveryColor }}
+                                  />
+                                  <span className="font-bold text-[#f2efe6] truncate">
+                                    {m.name}
+                                  </span>
+                                  {isMe && (
+                                    <span className="text-[9px] font-black tracking-[0.12em] text-[#22ff88]">
+                                      (YOU)
+                                    </span>
+                                  )}
+                                </div>
+                                {m.isHost && (
+                                  <span className="px-1.5 py-0.5 rounded bg-[#d8b24a]/20 text-[#f3d479] text-[9px] font-black tracking-[0.12em]">
+                                    HOST
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Room Circuit & Weather Settings (Host editable, Guest synced read-only) */}
+                      <div className="rounded-lg border border-white/12 bg-[#070a10]/80 p-3 flex flex-col justify-between space-y-2.5">
+                        <div className="space-y-2.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black tracking-[0.2em] text-[#00d2be]">
+                              RACE SETTINGS
+                            </span>
+                            <span className="text-[9px] font-bold text-[#f2efe6]/50">
+                              {isMultiplayerHost ? 'SYNCED TO ALL' : 'HOST CONTROLLED'}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {CIRCUIT_LIST.map((cCfg) => {
+                              const sel = activeRoom.circuit === cCfg.id;
+                              return (
+                                <button
+                                  key={cCfg.id}
+                                  type="button"
+                                  disabled={!isMultiplayerHost}
+                                  onClick={(e) => {
+                                    e.currentTarget.blur();
+                                    handleSelectCircuit(cCfg.id);
+                                  }}
+                                  className={`px-2.5 py-2 rounded-lg border text-left transition ${
+                                    sel
+                                      ? 'border-[#00d2be] bg-[#00d2be]/15 text-white'
+                                      : 'border-white/10 bg-white/[0.02] text-[#f2efe6]/60'
+                                  } ${isMultiplayerHost ? 'cursor-pointer hover:bg-white/10' : 'cursor-default'}`}
+                                >
+                                  <div className="text-[10px] font-black tracking-[0.1em] truncate">{cCfg.gpTitle}</div>
+                                  <div className="text-[9px] text-[#f2efe6]/55 truncate">{cCfg.lengthLabel}</div>
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {WEATHER_OPTIONS.map((opt) => {
+                              const sel = activeRoom.weather === opt.id;
+                              return (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  disabled={!isMultiplayerHost}
+                                  onClick={(e) => {
+                                    e.currentTarget.blur();
+                                    handleSelectStartWeather(opt.id);
+                                  }}
+                                  className={`flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg border text-[10px] font-black tracking-[0.08em] transition ${
+                                    sel
+                                      ? 'border-[#00d2be] bg-[#00d2be]/15 text-white'
+                                      : 'border-white/10 bg-white/[0.02] text-[#f2efe6]/60'
+                                  } ${isMultiplayerHost ? 'cursor-pointer hover:bg-white/10' : 'cursor-default'}`}
+                                >
+                                  <WeatherIcon type={opt.id} className={`w-3.5 h-3.5 shrink-0 ${opt.iconColorCls}`} />
+                                  <span>{opt.shortLabel}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <div className="rounded-lg bg-[#05080d] border border-white/10 px-2 py-1">
+                            <CircuitSvgMap config={getCircuitConfig(activeRoom.circuit)} selected={true} />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 border-t border-white/10">
+                      <span className="text-[10px] font-bold tracking-[0.14em] text-[#f2efe6]/60">
+                        {isMultiplayerHost
+                          ? 'ALL DRIVERS IN ROOM WILL LAUNCH TOGETHER ON THE GRID'
+                          : activeRoom.status === 'RACING'
+                            ? 'RACE IN PROGRESS — WAIT FOR HOST NEXT START'
+                            : 'WAITING FOR HOST TO START RACE…'}
+                      </span>
+                      {isMultiplayerHost ? (
+                        <button
+                          type="button"
+                          disabled={mpBusy}
+                          onClick={(e) => {
+                            e.currentTarget.blur();
+                            void handleHostStartRaceForAll();
+                          }}
+                          className="w-full sm:w-auto px-7 py-2.5 rounded-xl bg-gradient-to-r from-[#ff2d1a] to-[#e10600] text-[#f2efe6] text-xs font-black tracking-[0.2em] shadow-[0_10px_28px_rgba(225,6,0,0.45)] hover:brightness-110 active:scale-95 disabled:opacity-50 transition cursor-pointer"
+                        >
+                          {mpBusy ? 'STARTING…' : 'START RACE FOR ALL'}
+                        </button>
+                      ) : (
+                        <div className="px-4 py-2 rounded-lg border border-[#00d2be]/40 bg-[#00d2be]/10 text-[10px] font-black tracking-[0.18em] text-[#5eead4]">
+                          READY ON GRID
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.currentTarget.blur();
-                  handleStartRace();
-                }}
-                className="w-full sm:w-auto px-8 py-3 rounded-xl bg-gradient-to-r from-[#ff2d1a] to-[#e10600] text-[#f2efe6] text-sm font-black tracking-[0.24em] shadow-[0_10px_32px_rgba(225,6,0,0.5)] hover:brightness-110 active:scale-95 transition cursor-pointer"
-              >
-                START RACE
-              </button>
-            </div>
+            )}
           </div>
         </div>
       )}
