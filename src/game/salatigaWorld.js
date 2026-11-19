@@ -1,9 +1,9 @@
 // ============================================================================
-// salatigaWorld.js — Salatiga Street Circuit 3D Environment & OSM Architecture
-// Contoured Central Java highland terrain, Mount Merbabu & Telomoyo backdrop,
-// Bundaran Tamansari monument, Rumah Dinas Wali Kota Salatiga, UKSW Campus,
-// procedural salatigaCityZones shophouses, tropical shade trees, and async
-// OpenStreetMap salatiga-buildings.geojson merged 3D extrusion with fallback.
+// salatigaWorld.js — Salatiga -> Wates (7.9 KM) 3D Corridor Environment
+// Contoured Central Java highland terrain, distant Mount Merbabu / Merapi /
+// Telomoyo / Ungaran backdrop, strict road-corridor-only (onlyAlongActiveTrack)
+// OpenStreetMap GeoJSON + deterministic trackside building fill, tropical
+// shade trees, streetlamps, grandstands, and sponsor boards.
 // ============================================================================
 
 import * as THREE from 'three';
@@ -41,6 +41,16 @@ async function loadSalatigaGeoFeatures() {
   return geoFetchPromise;
 }
 
+function createSeededRng(seed = 7331) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 function hash2D(x, z) {
   const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
   return s - Math.floor(s);
@@ -55,7 +65,6 @@ function makeShophouseTexture(wallHex, trimHex, awningHex) {
   g.fillStyle = wallHex;
   g.fillRect(0, 0, 512, 512);
 
-  // Crisp tropical plaster texture & vertical concrete pilasters
   for (let i = 0; i < 1600; i++) {
     const x = (i * 73) % 512;
     const y = (i * 139) % 512;
@@ -69,7 +78,6 @@ function makeShophouseTexture(wallHex, trimHex, awningHex) {
     g.fillRect(px - 2, 0, 4, 512);
   }
 
-  // Crisp floor cornice moldings & shadow under-lips
   for (const [cy, ch] of [[0, 20], [218, 18], [374, 16]]) {
     g.fillStyle = trimHex;
     g.fillRect(0, cy, 512, ch);
@@ -77,29 +85,24 @@ function makeShophouseTexture(wallHex, trimHex, awningHex) {
     g.fillRect(0, cy + ch, 512, 5);
   }
 
-  // Upper floor windows with crisp frames, mullions, louvered shutters & sills
   for (let row = 0; row < 2; row++) {
     const wy = row === 0 ? 52 : 254;
     for (let col = 0; col < 4; col++) {
       const wx = 32 + col * 124;
-      // Outer window casing + shutters
       g.fillStyle = trimHex;
       g.fillRect(wx - 6, wy - 6, 76, 114);
       g.fillStyle = '#1e293b';
       g.fillRect(wx, wy, 64, 100);
-      // Reflective glass panes + white cross mullions
       g.fillStyle = '#5c94b4';
       g.fillRect(wx + 6, wy + 6, 23, 40);
       g.fillRect(wx + 35, wy + 6, 23, 40);
       g.fillRect(wx + 6, wy + 54, 23, 40);
       g.fillRect(wx + 35, wy + 54, 23, 40);
-      // Window sill shadow
       g.fillStyle = 'rgba(0,0,0,0.28)';
       g.fillRect(wx - 8, wy + 104, 80, 6);
     }
   }
 
-  // Ground floor ruko fascia band & warm backlit storefront glazing
   g.fillStyle = awningHex;
   g.fillRect(0, 382, 512, 28);
   g.fillStyle = '#0f172a';
@@ -199,7 +202,6 @@ function makeVolcanicMountainGeometry(radius, height, seedOffset) {
     const hFrac = THREE.MathUtils.clamp(y / height, 0, 1);
     const ang = Math.atan2(z, x);
 
-    // Sculpt realistic volcanic radial gullies & double caldera notch
     const ridge1 = Math.sin(ang * 5 + seedOffset) * 0.14;
     const ridge2 = Math.cos(ang * 11 - seedOffset * 1.4) * 0.07;
     const ridge3 = Math.sin(ang * 19 + hFrac * 4.0) * 0.035;
@@ -208,7 +210,6 @@ function makeVolcanicMountainGeometry(radius, height, seedOffset) {
 
     x *= radialScale;
     z *= radialScale;
-    // Slight summit crater flattening at top
     if (hFrac > 0.90) {
       const topT = (hFrac - 0.90) / 0.10;
       y -= topT * height * 0.045 * (0.6 + 0.4 * Math.cos(ang * 2));
@@ -230,45 +231,6 @@ function makeVolcanicMountainGeometry(radius, height, seedOffset) {
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.computeVertexNormals();
   return geo;
-}
-
-function makeShadeTreeTrunkGeo() {
-  // Flared trunk splitting into 3 upper limbs
-  const parts = [
-    new THREE.CylinderGeometry(0.24, 0.42, 3.6, 8),
-    new THREE.CylinderGeometry(0.11, 0.20, 2.2, 6),
-    new THREE.CylinderGeometry(0.10, 0.18, 2.1, 6),
-    new THREE.CylinderGeometry(0.10, 0.18, 2.0, 6),
-  ];
-  parts[0].translate(0, 1.8, 0);
-  parts[1].rotateZ(0.48);
-  parts[1].translate(-0.55, 4.1, 0.15);
-  parts[2].rotateZ(-0.44);
-  parts[2].rotateX(0.22);
-  parts[2].translate(0.55, 4.0, -0.2);
-  parts[3].rotateX(-0.46);
-  parts[3].translate(0.05, 4.0, 0.52);
-
-  return mergeSimpleGeos(parts, false);
-}
-
-function makeShadeTreeCanopyGeo() {
-  // Multi-lobed broad tropical shade canopy (angsan / banyan / trembesi)
-  const blobs = [
-    { rx: 2.65, ry: 1.45, rz: 2.55, x: 0, y: 5.4, z: 0 },
-    { rx: 1.95, ry: 1.25, rz: 1.85, x: -1.35, y: 4.9, z: 0.45 },
-    { rx: 1.95, ry: 1.20, rz: 1.90, x: 1.35, y: 4.95, z: -0.45 },
-    { rx: 1.75, ry: 1.15, rz: 1.75, x: 0.15, y: 5.05, z: 1.35 },
-    { rx: 1.65, ry: 1.15, rz: 1.65, x: -0.2, y: 5.1, z: -1.3 },
-    { rx: 1.55, ry: 1.15, rz: 1.55, x: 0, y: 6.25, z: 0 },
-  ];
-  const geos = blobs.map((b) => {
-    const g = new THREE.IcosahedronGeometry(1, 1);
-    g.scale(b.rx, b.ry, b.rz);
-    g.translate(b.x, b.y, b.z);
-    return g;
-  });
-  return mergeSimpleGeos(geos, true);
 }
 
 function mergeSimpleGeos(geos, includeVertexYColor = false) {
@@ -312,14 +274,53 @@ function mergeSimpleGeos(geos, includeVertexYColor = false) {
   return merged;
 }
 
+function makeShadeTreeTrunkGeo() {
+  const parts = [
+    new THREE.CylinderGeometry(0.24, 0.42, 3.6, 8),
+    new THREE.CylinderGeometry(0.11, 0.20, 2.2, 6),
+    new THREE.CylinderGeometry(0.10, 0.18, 2.1, 6),
+    new THREE.CylinderGeometry(0.10, 0.18, 2.0, 6),
+  ];
+  parts[0].translate(0, 1.8, 0);
+  parts[1].rotateZ(0.48);
+  parts[1].translate(-0.55, 4.1, 0.15);
+  parts[2].rotateZ(-0.44);
+  parts[2].rotateX(0.22);
+  parts[2].translate(0.55, 4.0, -0.2);
+  parts[3].rotateX(-0.46);
+  parts[3].translate(0.05, 4.0, 0.52);
+
+  return mergeSimpleGeos(parts, false);
+}
+
+function makeShadeTreeCanopyGeo() {
+  const blobs = [
+    { rx: 2.65, ry: 1.45, rz: 2.55, x: 0, y: 5.4, z: 0 },
+    { rx: 1.95, ry: 1.25, rz: 1.85, x: -1.35, y: 4.9, z: 0.45 },
+    { rx: 1.95, ry: 1.20, rz: 1.90, x: 1.35, y: 4.95, z: -0.45 },
+    { rx: 1.75, ry: 1.15, rz: 1.75, x: 0.15, y: 5.05, z: 1.35 },
+    { rx: 1.65, ry: 1.15, rz: 1.65, x: -0.2, y: 5.1, z: -1.3 },
+    { rx: 1.55, ry: 1.15, rz: 1.55, x: 0, y: 6.25, z: 0 },
+  ];
+  const geos = blobs.map((b) => {
+    const g = new THREE.IcosahedronGeometry(1, 1);
+    g.scale(b.rx, b.ry, b.rz);
+    g.translate(b.x, b.y, b.z);
+    return g;
+  });
+  return mergeSimpleGeos(geos, true);
+}
+
 export function buildSalatigaEnvironment(scene, ctx) {
   const {
     pos,
     right,
     SAMPLE_COUNT,
     HALF_WIDTH,
-    startU,
-    drsZones,
+    totalLength = 7986,
+    closedLoop = false,
+    startU = 0,
+    finishLineU = 0.994,
     nearestSample,
     envTime,
     dummy,
@@ -333,7 +334,29 @@ export function buildSalatigaEnvironment(scene, ctx) {
     abortSignal,
   } = ctx;
 
-  // 1. Spatial Grid over Track Samples for Fast O(1) Terrain Height Evaluation
+  const uDenom = closedLoop ? SAMPLE_COUNT : Math.max(1, SAMPLE_COUNT - 1);
+  const wrapU = (u) => (closedLoop ? (((u % 1) + 1) % 1) : THREE.MathUtils.clamp(u, 0, 1));
+  const idxAtU = (u) =>
+    closedLoop
+      ? ((Math.round(u * SAMPLE_COUNT) % SAMPLE_COUNT) + SAMPLE_COUNT) % SAMPLE_COUNT
+      : THREE.MathUtils.clamp(Math.round(u * uDenom), 0, SAMPLE_COUNT - 1);
+
+  // Route bounding box for dynamic terrain & far mountain framing
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (let i = 0; i < SAMPLE_COUNT; i++) {
+    const p = pos[i];
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.z < minZ) minZ = p.z;
+    if (p.z > maxZ) maxZ = p.z;
+  }
+  const routeCenterX = (minX + maxX) * 0.5;
+  const routeCenterZ = (minZ + maxZ) * 0.5;
+
+  // 1. Spatial Grid over Track Samples for Fast O(1) Corridor & Terrain Evaluation
   const CELL = 36;
   const trackGrid = new Map();
   for (let i = 0; i < SAMPLE_COUNT; i++) {
@@ -375,31 +398,32 @@ export function buildSalatigaEnvironment(scene, ctx) {
     return nearestSample(x, z);
   };
 
-  const getBaseHighlandY = (x, z) => {
-    // Central Java basin: gently lower in the north (Blotongan), rising south toward Mount Merbabu
-    const southSlope = THREE.MathUtils.clamp((z + 750) / 1700, 0, 1.3) * 34;
-    const westRidge = THREE.MathUtils.clamp((-x + 250) / 1400, 0, 1.2) * 14;
-    const hills =
-      Math.sin(x * 0.0032 + 0.6) * Math.cos(z * 0.0029) * 8.5 +
-      Math.sin(x * 0.0085 - z * 0.0062) * 3.8;
-    const farRise = Math.max(0, Math.hypot(x, z) - 980) * 0.045;
-    return -4 + southSlope + westRidge + hills + farRise;
-  };
-
+  // Terrain carved strictly <= trackY - 0.78m anywhere within 38m of centerline
+  // so no hillside/triangle ever clips the active Tamansari -> Wates road.
   const getTerrainHeight = (x, z) => {
     const near = nearestTrackFast(x, z);
     const dist = Math.sqrt(near.distSq);
-    const trackY = pos[near.idx].y - 0.65;
-    if (dist <= 32) return trackY;
-    const baseY = getBaseHighlandY(x, z);
-    if (dist >= 150) return baseY;
-    const t = THREE.MathUtils.smoothstep((dist - 32) / 118, 0, 1);
+    const trackY = pos[near.idx].y - 0.78;
+    if (dist <= 38) return trackY;
+
+    const southSlope = THREE.MathUtils.clamp((z - 800) / 4200, -0.15, 1.1) * 24;
+    const westRidge = THREE.MathUtils.clamp((-x + 200) / 3600, -0.15, 1.0) * 14;
+    const hills =
+      Math.sin(x * 0.0022 + 0.6) * Math.cos(z * 0.0021) * 8.0 +
+      Math.sin(x * 0.0064 - z * 0.0052) * 3.6;
+    const farRise = Math.min(82, Math.max(0, dist - 220) * 0.032);
+    const baseY = trackY * 0.75 + southSlope * 0.45 + westRidge * 0.45 + hills + farRise - 1.5;
+
+    if (dist >= 145) return baseY;
+    const t = THREE.MathUtils.smoothstep((dist - 38) / 107, 0, 1);
     const lerpY = THREE.MathUtils.lerp(trackY, baseY, t);
-    return dist < 76 ? Math.min(lerpY, trackY + (dist - 32) * 0.24) : lerpY;
+    return Math.min(lerpY, trackY + (dist - 38) * 0.14);
   };
 
-  // 2. Contoured Javanese Highland Basin Terrain Mesh (256x256 high-res carved road corridor)
-  const terrainGeo = new THREE.PlaneGeometry(4600, 4600, 256, 256);
+  // 2. Dynamic Route-BBox Highland Basin Terrain Mesh (256x256 carved road corridor)
+  const terrainW = Math.max(8400, Math.ceil((maxX - minX + 5200) / 100) * 100);
+  const terrainD = Math.max(9200, Math.ceil((maxZ - minZ + 4600) / 100) * 100);
+  const terrainGeo = new THREE.PlaneGeometry(terrainW, terrainD, 256, 256);
   terrainGeo.rotateX(-Math.PI / 2);
   const tPos = terrainGeo.getAttribute('position');
   const tColors = new Float32Array(tPos.count * 3);
@@ -410,15 +434,15 @@ export function buildSalatigaEnvironment(scene, ctx) {
   const cTmp = new THREE.Color();
 
   for (let i = 0; i < tPos.count; i++) {
-    const x = tPos.getX(i);
-    const z = tPos.getZ(i);
-    const y = getTerrainHeight(x, z);
-    tPos.setY(i, y);
+    const wx = tPos.getX(i) + routeCenterX;
+    const wz = tPos.getZ(i) + routeCenterZ;
+    const wy = getTerrainHeight(wx, wz);
+    tPos.setXYZ(i, wx, wy, wz);
 
-    const near = nearestTrackFast(x, z);
+    const near = nearestTrackFast(wx, wz);
     const dist = Math.sqrt(near.distSq);
-    const slopeMix = THREE.MathUtils.clamp((y - 8) / 48, 0, 1);
-    cTmp.copy(cValley).lerp(cTerrace, 0.35 + 0.35 * Math.sin(x * 0.01 + z * 0.01));
+    const slopeMix = THREE.MathUtils.clamp((wy - 8) / 62, 0, 1);
+    cTmp.copy(cValley).lerp(cTerrace, 0.35 + 0.35 * Math.sin(wx * 0.008 + wz * 0.008));
     cTmp.lerp(cFoothill, slopeMix * 0.65);
     if (dist < 46) cTmp.lerp(cUrban, 0.32 * (1 - dist / 46));
     tColors[i * 3] = cTmp.r;
@@ -440,7 +464,7 @@ export function buildSalatigaEnvironment(scene, ctx) {
   scene.add(terrainMesh);
 
   // 3. Far-Horizon Mount Merbabu & Mount Merapi Massif + Telomoyo & Ungaran
-  // Placed strictly > 2,800m–4,800m away from track center (> 1,600m beyond track bounds)
+  // Every volcano center is > 2,400m from the 7.9km Tamansari -> Wates route
   const mountainMistUniform = { value: 0.0 };
   const mountainMat = new THREE.MeshStandardMaterial({
     vertexColors: true,
@@ -470,35 +494,72 @@ export function buildSalatigaEnvironment(scene, ctx) {
       );
   };
 
-  const merbabuMain = new THREE.Mesh(makeVolcanicMountainGeometry(1250, 980, 1.3), mountainMat);
-  merbabuMain.position.set(-950, -14, 4150);
+  const merbabuMain = new THREE.Mesh(makeVolcanicMountainGeometry(1350, 1150, 1.3), mountainMat);
+  merbabuMain.position.set(-650, -18, 7050);
   scene.add(merbabuMain);
 
-  const merbabuShoulder = new THREE.Mesh(makeVolcanicMountainGeometry(980, 740, 2.7), mountainMat);
-  merbabuShoulder.position.set(580, -16, 4350);
+  const merbabuShoulder = new THREE.Mesh(makeVolcanicMountainGeometry(1050, 860, 2.7), mountainMat);
+  merbabuShoulder.position.set(950, -18, 7200);
   scene.add(merbabuShoulder);
 
-  const merapiCone = new THREE.Mesh(makeVolcanicMountainGeometry(1350, 1180, 3.6), mountainMat);
-  merapiCone.position.set(-2450, -20, 4800);
+  const merapiCone = new THREE.Mesh(makeVolcanicMountainGeometry(1450, 1320, 3.6), mountainMat);
+  merapiCone.position.set(-2450, -24, 7800);
   scene.add(merapiCone);
 
-  const telomoyo = new THREE.Mesh(makeVolcanicMountainGeometry(1050, 680, 4.1), mountainMat);
-  telomoyo.position.set(-3950, -12, 1200);
+  const telomoyo = new THREE.Mesh(makeVolcanicMountainGeometry(1100, 760, 4.1), mountainMat);
+  telomoyo.position.set(-4650, -14, 4800);
   scene.add(telomoyo);
 
-  const ungaran = new THREE.Mesh(makeVolcanicMountainGeometry(1100, 690, 5.4), mountainMat);
-  ungaran.position.set(-2950, -16, -3950);
+  const ungaran = new THREE.Mesh(makeVolcanicMountainGeometry(1200, 780, 5.4), mountainMat);
+  ungaran.position.set(-3400, -18, -2900);
   scene.add(ungaran);
 
-  // 4. Landmark Clear Zones (Hero landmarks are snapped directly to trackside in track.js)
+  // 4. Landmark Clear Zones & Spatial Occupancy Grid (prevents any overlaps)
   const landmarkClearZones = [...heroClearZones];
+  const buildingOccGrid = new Map();
+  const OCC_CELL = 16;
 
-  // 5. Shared Zone Materials (used by real GeoJSON builder & procedural fallback)
+  const markBuildingOccupied = (x, z) => {
+    const gx = Math.floor(x / OCC_CELL);
+    const gz = Math.floor(z / OCC_CELL);
+    const key = `${gx},${gz}`;
+    let arr = buildingOccGrid.get(key);
+    if (!arr) {
+      arr = [];
+      buildingOccGrid.set(key, arr);
+    }
+    arr.push([x, z]);
+  };
+
+  const isNearExistingBuilding = (x, z, radiusSq) => {
+    const gx = Math.floor(x / OCC_CELL);
+    const gz = Math.floor(z / OCC_CELL);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const arr = buildingOccGrid.get(`${gx + dx},${gz + dz}`);
+        if (!arr) continue;
+        for (let k = 0; k < arr.length; k++) {
+          const [bx, bz] = arr[k];
+          if ((x - bx) ** 2 + (z - bz) ** 2 < radiusSq) return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  const hitsLandmarkZone = (x, z, uVal, side) => {
+    for (const lz of landmarkClearZones) {
+      if ((x - lz.x) ** 2 + (z - lz.z) ** 2 < lz.radSq) return true;
+      if (lz.uProg != null && lz.side === side && Math.abs(uVal - lz.uProg) < 0.014) return true;
+    }
+    return false;
+  };
+
+  // 5. Shared Zone Materials (strict corridor buildings: 6m-55m from road edge, <=75m centerline)
   const wallTexPalettes = [
-    makeShophouseTexture('#f3eadb', '#d1c4ad', '#b91c1c'), // Zone 0: Sudirman-Tamansari commercial ruko
-    makeShophouseTexture('#f4f5f6', '#cbd5e1', '#14532d'), // Zone 1: Diponegoro-Blotongan colonial white/cream
-    makeShophouseTexture('#e5dccb', '#a89274', '#0f766e'), // Zone 2: JLS highland cafes & warehouses
-    makeShophouseTexture('#f3e3d3', '#c89b72', '#b45309'),
+    makeShophouseTexture('#f3eadb', '#d1c4ad', '#b91c1c'), // Zone 0: Tamansari - Jl. Jend. Sudirman commercial ruko
+    makeShophouseTexture('#f4f5f6', '#cbd5e1', '#14532d'), // Zone 1: Civic / Tingkir boulevard
+    makeShophouseTexture('#e5dccb', '#a89274', '#0f766e'), // Zone 2: JLS highland cafes & homes toward Wates
   ];
   const rukoWallMats = wallTexPalettes.map(
     (tex) =>
@@ -521,76 +582,98 @@ export function buildSalatigaEnvironment(scene, ctx) {
     new THREE.MeshStandardMaterial({ map: makeKanopiTexture('#1d4ed8', '#f8fafc'), roughness: 0.62, side: THREE.DoubleSide }),
   ];
 
-  let proceduralBuilt = false;
-  const buildProceduralCityZones = () => {
-    if (proceduralBuilt || abortSignal?.aborted) return;
-    proceduralBuilt = true;
+  // Strict anti-sprawl corridor bounds
+  const MIN_BLDG_CENTER_DIST = HALF_WIDTH + 6.0; // 13m from centerline (>= 6m from asphalt edge)
+  const MAX_BLDG_CENTER_DIST = HALF_WIDTH + 55.0; // 62m from centerline (<= 55m from asphalt edge)
+  const HARD_CUTOFF_CENTER_DIST = 75.0;
 
-    const zoneBuckets = [[], [], [], []];
+  let corridorFillBuilt = false;
+  const buildCorridorFillBuildings = () => {
+    if (corridorFillBuilt || abortSignal?.aborted) return;
+    corridorFillBuilt = true;
+
+    const rng = createSeededRng(7331);
+    const spacingMeters = 18;
+    const totalSlots = Math.max(80, Math.floor(totalLength / spacingMeters));
+
+    const zoneBuckets = [[], [], []];
     const kanopiBuckets = [[], [], []];
     const roofBuckets = [];
 
-    for (let i = 0; i < 220; i++) {
-      const u = i / 220;
-      const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
+    for (let i = 0; i <= totalSlots; i++) {
+      const u = i / totalSlots;
+      const idx = idxAtU(u);
       const p = pos[idx];
       const r = right[idx];
-      const side = i % 2 === 0 ? -1 : 1;
 
-      const isJls = u > 0.14 && u < 0.56;
-      if (isJls && i % 3 !== 0) continue;
+      // Urban commercial density in northern Sudirman/Tamansari (u < 0.35),
+      // sparser highland homes/cafes along Tingkir -> JLS -> Wates (u >= 0.35)
+      const isUrban = u < 0.35;
+      const isPeriUrban = u >= 0.35 && u < 0.62;
+      const spawnBothSides = isUrban;
 
-      const prog = (((u - startU) % 1) + 1) % 1;
-      const dist = (isJls ? 28 : 21) + ((i * 29) % 28);
-      const bx = p.x + r.x * side * dist;
-      const bz = p.z + r.z * side * dist;
+      for (const side of spawnBothSides ? [-1, 1] : [i % 2 === 0 ? -1 : 1]) {
+        const roll = rng();
+        if (!isUrban && roll > (isPeriUrban ? 0.56 : 0.42)) continue;
+        if (isUrban && roll > 0.86) continue;
 
-      const near = nearestTrackFast(bx, bz);
-      if (near.distSq < (HALF_WIDTH + 9.5) ** 2) continue;
+        const edgeOffset = isUrban
+          ? 7.5 + rng() * 26.0
+          : 9.0 + rng() * 34.0;
+        const centerDist = THREE.MathUtils.clamp(
+          HALF_WIDTH + edgeOffset,
+          MIN_BLDG_CENTER_DIST + 1.5,
+          MAX_BLDG_CENTER_DIST - 4.0
+        );
 
-      let nearLandmark = false;
-      for (const cz of landmarkClearZones) {
-        if ((bx - cz.x) ** 2 + (bz - cz.z) ** 2 < cz.radSq) {
-          nearLandmark = true;
-          break;
-        }
-        if (cz.uProg != null && cz.side === side && Math.abs(prog - cz.uProg) < 0.015) {
-          nearLandmark = true;
-          break;
-        }
-      }
-      if (nearLandmark) continue;
+        const bx = p.x + r.x * side * centerDist;
+        const bz = p.z + r.z * side * centerDist;
 
-      const groundY = Math.min(getTerrainHeight(bx, bz), pos[near.idx].y - 0.35);
-      const w = isJls ? 9 + (i % 4) * 2.2 : 10.5 + (i % 5) * 2.4;
-      const d = isJls ? 8 + ((i * 3) % 4) * 1.8 : 9 + ((i * 3) % 3) * 2.0;
-      const h = isJls ? 4.8 + (i % 3) * 1.6 : 6.2 + (i % 5) * 2.1;
-      const roadYaw = Math.atan2(-side * r.x, -side * r.z);
-      const pal = prog >= 0.60 && prog <= 0.785 ? 0 : isJls ? 2 : 1;
+        const near = nearestTrackFast(bx, bz);
+        const nearDist = Math.sqrt(near.distSq);
+        if (nearDist < MIN_BLDG_CENTER_DIST + 2.5 || nearDist > HARD_CUTOFF_CENTER_DIST - 6.0) continue;
+        if (hitsLandmarkZone(bx, bz, u, side)) continue;
+        if (isNearExistingBuilding(bx, bz, 15.5 * 15.5)) continue;
 
-      zoneBuckets[pal].push({ x: bx, y: groundY - 2.0, z: bz, w, h: h + 2.0, d, yaw: roadYaw });
-      roofBuckets.push({
-        x: bx,
-        y: groundY + h,
-        z: bz,
-        w: w * 0.78,
-        h: 1.9 + (i % 3) * 0.45,
-        d: d * 0.78,
-        yaw: roadYaw + Math.PI / 4,
-      });
+        const w = isUrban ? 9.5 + rng() * 4.5 : 8.0 + rng() * 4.2;
+        const d = isUrban ? 8.5 + rng() * 3.5 : 7.5 + rng() * 3.2;
+        // Verify building corners don't cross inside MIN_BLDG_CENTER_DIST
+        if (nearDist - Math.max(w, d) * 0.6 < MIN_BLDG_CENTER_DIST) continue;
 
-      if (!isJls && (prog >= 0.60 && prog <= 0.785)) {
-        const fx = Math.sin(roadYaw);
-        const fz = Math.cos(roadYaw);
-        const canopyOffset = d * 0.5 + 1.15;
-        kanopiBuckets[i % kanopiMats.length].push({
-          x: bx + fx * canopyOffset,
-          y: groundY + 3.05,
-          z: bz + fz * canopyOffset,
-          w: w * 0.94,
-          d: 2.55,
-          yaw: roadYaw,
+        const floors = isUrban
+          ? (rng() > 0.58 ? 3 : rng() > 0.22 ? 2 : 1)
+          : (rng() > 0.68 ? 2 : 1);
+        const h = floors * 3.5;
+
+        const groundY = Math.min(getTerrainHeight(bx, bz), pos[near.idx].y - 0.35);
+        const roadYaw = Math.atan2(-side * r.x, -side * r.z);
+        const pal = isUrban ? (u < 0.26 ? 0 : 1) : 2;
+
+        markBuildingOccupied(bx, bz);
+        zoneBuckets[pal].push({ x: bx, y: groundY - 2.2, z: bz, w, h: h + 2.2, d, yaw: roadYaw });
+        roofBuckets.push({
+          x: bx,
+          y: groundY + h,
+          z: bz,
+          w: w * 0.78,
+          h: 1.7 + rng() * 0.75,
+          d: d * 0.78,
+          yaw: roadYaw + Math.PI / 4,
         });
+
+        if (isUrban && pal === 0 && nearDist <= HALF_WIDTH + 32) {
+          const fx = Math.sin(roadYaw);
+          const fz = Math.cos(roadYaw);
+          const canopyOffset = d * 0.5 + 1.1;
+          kanopiBuckets[i % kanopiMats.length].push({
+            x: bx + fx * canopyOffset,
+            y: groundY + 3.05,
+            z: bz + fz * canopyOffset,
+            w: w * 0.92,
+            d: 2.35,
+            yaw: roadYaw,
+          });
+        }
       }
     }
 
@@ -651,99 +734,96 @@ export function buildSalatigaEnvironment(scene, ctx) {
     });
   };
 
-  // 6. Tropical Javanese Shade Trees (InstancedMesh + Wind-Sway Shader)
+  // 6. Tropical Javanese Shade Trees (alongsideTrackOnly: true, strictly 6m-45m from road edges)
   const treeSpecs = [];
-  for (let i = 0; i < 240; i++) {
-    const u = i / 240;
-    const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
-    const p = pos[idx];
-    const r = right[idx];
-    const side = i % 2 === 0 ? -1 : 1;
-    const jitter = hash2D(i * 1.37, idx * 0.71);
-    const dist = HALF_WIDTH + 5.2 + jitter * 14.5;
-    const tx = p.x + r.x * side * dist;
-    const tz = p.z + r.z * side * dist;
+  const buildTrees = () => {
+    const treeSteps = Math.max(200, Math.floor(totalLength / 20));
+    for (let i = 0; i <= treeSteps; i++) {
+      const u = i / treeSteps;
+      const idx = idxAtU(u);
+      const p = pos[idx];
+      const r = right[idx];
+      const side = i % 2 === 0 ? -1 : 1;
+      const jitter = hash2D(i * 1.37, idx * 0.71);
+      const edgeOffset = 6.5 + jitter * 28.0; // strictly within 6m..45m from asphalt edge
+      const dist = HALF_WIDTH + edgeOffset;
+      const tx = p.x + r.x * side * dist;
+      const tz = p.z + r.z * side * dist;
 
-    if (nearestTrackFast(tx, tz).distSq < (HALF_WIDTH + 4.4) ** 2) continue;
-    const prog = (((u - startU) % 1) + 1) % 1;
-    let skip = false;
-    for (const cz of landmarkClearZones) {
-      if ((tx - cz.x) ** 2 + (tz - cz.z) ** 2 < cz.radSq) {
-        skip = true;
-        break;
-      }
-      if (cz.uProg != null && cz.side === side && Math.abs(prog - cz.uProg) < 0.015) {
-        skip = true;
-        break;
-      }
+      const near = nearestTrackFast(tx, tz);
+      const nearDist = Math.sqrt(near.distSq);
+      if (nearDist < HALF_WIDTH + 6.0 || nearDist > HALF_WIDTH + 45.0) continue;
+      if (hitsLandmarkZone(tx, tz, u, side)) continue;
+      if (isNearExistingBuilding(tx, tz, 6.2 * 6.2)) continue;
+
+      const ty = Math.min(getTerrainHeight(tx, tz), pos[near.idx].y - 0.25);
+      treeSpecs.push({
+        x: tx,
+        y: ty - 0.15,
+        z: tz,
+        s: 0.78 + jitter * 0.48,
+        yaw: jitter * Math.PI * 2,
+      });
     }
-    if (skip) continue;
 
-    const ty = getTerrainHeight(tx, tz);
-    treeSpecs.push({
-      x: tx,
-      y: ty - 0.15,
-      z: tz,
-      s: 0.78 + jitter * 0.48,
-      yaw: jitter * Math.PI * 2,
-    });
-  }
+    if (treeSpecs.length) {
+      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4b382a, roughness: 0.92 });
+      const canopyMat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.82,
+        metalness: 0.0,
+      });
+      canopyMat.customProgramCacheKey = () => 'salatiga_tree_breeze_v1';
+      canopyMat.onBeforeCompile = (shader) => {
+        shader.uniforms.uEnvTime = envTime;
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nuniform float uEnvTime;')
+          .replace(
+            '#include <begin_vertex>',
+            `#include <begin_vertex>
+            vec3 treeOrigin = vec3(0.0);
+            #ifdef USE_INSTANCING
+              treeOrigin = (instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+            #endif
+            float treePhase = fract(sin(dot(treeOrigin.xz, vec2(12.9898, 78.233))) * 43758.5453) * 6.2831;
+            float swayMask = smoothstep(3.4, 6.2, position.y);
+            transformed.x += sin(uEnvTime * 1.45 + treePhase + position.y * 0.5) * 0.16 * swayMask;
+            transformed.z += cos(uEnvTime * 1.15 + treePhase * 1.3) * 0.12 * swayMask;`
+          );
+      };
 
-  if (treeSpecs.length) {
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4b382a, roughness: 0.92 });
-    const canopyMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.82,
-      metalness: 0.0,
-    });
-    canopyMat.customProgramCacheKey = () => 'salatiga_tree_breeze_v1';
-    canopyMat.onBeforeCompile = (shader) => {
-      shader.uniforms.uEnvTime = envTime;
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nuniform float uEnvTime;')
-        .replace(
-          '#include <begin_vertex>',
-          `#include <begin_vertex>
-          vec3 treeOrigin = vec3(0.0);
-          #ifdef USE_INSTANCING
-            treeOrigin = (instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-          #endif
-          float treePhase = fract(sin(dot(treeOrigin.xz, vec2(12.9898, 78.233))) * 43758.5453) * 6.2831;
-          float swayMask = smoothstep(3.4, 6.2, position.y);
-          transformed.x += sin(uEnvTime * 1.45 + treePhase + position.y * 0.5) * 0.16 * swayMask;
-          transformed.z += cos(uEnvTime * 1.15 + treePhase * 1.3) * 0.12 * swayMask;`
-        );
-    };
+      const trunkIM = new THREE.InstancedMesh(makeShadeTreeTrunkGeo(), trunkMat, treeSpecs.length);
+      const canopyIM = new THREE.InstancedMesh(makeShadeTreeCanopyGeo(), canopyMat, treeSpecs.length);
+      trunkIM.castShadow = true;
+      canopyIM.castShadow = true;
+      canopyIM.receiveShadow = true;
 
-    const trunkIM = new THREE.InstancedMesh(makeShadeTreeTrunkGeo(), trunkMat, treeSpecs.length);
-    const canopyIM = new THREE.InstancedMesh(makeShadeTreeCanopyGeo(), canopyMat, treeSpecs.length);
-    trunkIM.castShadow = true;
-    canopyIM.castShadow = true;
-    canopyIM.receiveShadow = true;
+      const canopyTones = [0xe8ffd8, 0xd4f7c2, 0xf2ffe6, 0xc4ebb0];
+      const cTmpTree = new THREE.Color();
+      treeSpecs.forEach((tr, i) => {
+        dummy.position.set(tr.x, tr.y, tr.z);
+        dummy.rotation.set(0, tr.yaw, 0);
+        dummy.scale.setScalar(tr.s);
+        dummy.updateMatrix();
+        trunkIM.setMatrixAt(i, dummy.matrix);
+        canopyIM.setMatrixAt(i, dummy.matrix);
+        canopyIM.setColorAt(i, cTmpTree.setHex(canopyTones[i % canopyTones.length]));
+      });
+      trunkIM.instanceMatrix.needsUpdate = true;
+      canopyIM.instanceMatrix.needsUpdate = true;
+      if (canopyIM.instanceColor) canopyIM.instanceColor.needsUpdate = true;
+      trunkIM.computeBoundingSphere();
+      canopyIM.computeBoundingSphere();
+      scene.add(trunkIM, canopyIM);
+    }
+  };
 
-    const canopyTones = [0xe8ffd8, 0xd4f7c2, 0xf2ffe6, 0xc4ebb0];
-    const cTmpTree = new THREE.Color();
-    treeSpecs.forEach((tr, i) => {
-      dummy.position.set(tr.x, tr.y, tr.z);
-      dummy.rotation.set(0, tr.yaw, 0);
-      dummy.scale.setScalar(tr.s);
-      dummy.updateMatrix();
-      trunkIM.setMatrixAt(i, dummy.matrix);
-      canopyIM.setMatrixAt(i, dummy.matrix);
-      canopyIM.setColorAt(i, cTmpTree.setHex(canopyTones[i % canopyTones.length]));
-    });
-    trunkIM.instanceMatrix.needsUpdate = true;
-    canopyIM.instanceMatrix.needsUpdate = true;
-    if (canopyIM.instanceColor) canopyIM.instanceColor.needsUpdate = true;
-    trunkIM.computeBoundingSphere();
-    canopyIM.computeBoundingSphere();
-    scene.add(trunkIM, canopyIM);
-  }
-
-  // 7. Streetlamps along Salatiga Boulevards
+  // 7. Streetlamps along Salatiga -> Wates Route
   const lampSpecs = [];
-  for (let i = 0; i < 84; i++) {
-    const idx = Math.floor((i / 84) * SAMPLE_COUNT);
+  const lampCount = Math.max(96, Math.round(totalLength / 48));
+  for (let i = 0; i <= lampCount; i++) {
+    const u = 0.005 + (i / lampCount) * 0.99;
+    const idx = idxAtU(u);
     const p = pos[idx];
     const r = right[idx];
     const side = i % 2 === 0 ? 1 : -1;
@@ -787,43 +867,38 @@ export function buildSalatigaEnvironment(scene, ctx) {
     scene.add(poleIM, bulbIM);
   }
 
-  // 8. Grandstands & Salatiga Circuit Sponsor Boards (clear of hero landmark frontages)
+  // 8. Grandstands & Sponsor Boards along the 7.9 KM Stage
   if (typeof makeGrandstandCluster === 'function') {
     makeGrandstandCluster([
-      { u: (startU + 0.014) % 1, side: 1, dist: 19 },
-      { u: (startU + 0.36) % 1, side: -1, dist: 21 },
-      { u: (startU + 0.50) % 1, side: 1, dist: 20 },
-      { u: (startU + 0.96) % 1, side: -1, dist: 20 },
+      { u: wrapU(startU + 0.012), side: 1, dist: 19 },
+      { u: wrapU(0.26), side: -1, dist: 20 },
+      { u: wrapU(0.58), side: 1, dist: 20 },
+      { u: wrapU(finishLineU - 0.014), side: -1, dist: 19 },
     ]);
   }
 
   const salatigaGpFace = new THREE.MeshStandardMaterial({
-    map: makeSponsorBannerTexture('#06281e', '#22ff88', 'SALATIGA GP', 'HIGHLAND STREET CIRCUIT · 9.8 KM'),
+    map: makeSponsorBannerTexture('#06281e', '#22ff88', 'SALATIGA — WATES', 'POINT-TO-POINT STAGE · 7.9 KM'),
     roughness: 0.42,
     metalness: 0.12,
   });
   const jlsFace = new THREE.MeshStandardMaterial({
-    map: makeSponsorBannerTexture('#1a1f2b', '#d8b24a', 'MERBABU HIGHLAND', 'BLOTONGAN · JLS · TAMANSARI'),
+    map: makeSponsorBannerTexture('#1a1f2b', '#d8b24a', 'MERBABU HIGHLAND', 'TAMANSARI · SUDIRMAN · JLS · WATES'),
     roughness: 0.42,
     metalness: 0.12,
   });
 
   const bannerBuckets = [[], [], [], []];
-  for (let i = 0; i < 84; i++) {
-    const u = i / 84;
-    const idx = Math.floor(u * SAMPLE_COUNT);
+  const bannerCount = Math.max(72, Math.round(totalLength / 68));
+  for (let i = 0; i <= bannerCount; i++) {
+    const u = 0.01 + (i / bannerCount) * 0.975;
+    const idx = idxAtU(u);
     const p = pos[idx];
     const r = right[idx];
     const side = i % 2 === 0 ? 1 : -1;
-    const prog = (((u - startU) % 1) + 1) % 1;
-    let skipHero = false;
-    for (const cz of landmarkClearZones) {
-      if (cz.uProg != null && cz.side === side && Math.abs(prog - cz.uProg) < 0.016) {
-        skipHero = true;
-        break;
-      }
+    if (hitsLandmarkZone(p.x + r.x * side * (HALF_WIDTH + 1.16), p.z + r.z * side * (HALF_WIDTH + 1.16), u, side)) {
+      continue;
     }
-    if (skipHero) continue;
 
     const bx = p.x + r.x * side * (HALF_WIDTH + 1.16);
     const bz = p.z + r.z * side * (HALF_WIDTH + 1.16);
@@ -841,24 +916,25 @@ export function buildSalatigaEnvironment(scene, ctx) {
   spawnBanners(bannerBuckets[2], [gantryTrimMat, gantryTrimMat, gantryTrimMat, gantryTrimMat, salatigaGpFace, salatigaGpFace]);
   spawnBanners(bannerBuckets[3], [gantryTrimMat, gantryTrimMat, gantryTrimMat, gantryTrimMat, jlsFace, jlsFace]);
 
-  // 9. Async Real OpenStreetMap Building Extrusion (salatiga-buildings.geojson)
-  // 12m–140m corridor filtering, building:levels + zone-aware heights, batched into <= 5 draw calls
+  // 9. Async Real OpenStreetMap Building Extrusion + Corridor-Only Fill
+  // Strict anti-sprawl corridor filter: edge offset 6m-55m (centerline 13m-62m, hard cutoff 75m)
   if (!salatigaGeoUrl) {
-    buildProceduralCityZones();
+    buildCorridorFillBuildings();
+    buildTrees();
   } else {
     loadSalatigaGeoFeatures()
       .then((features) => {
         if (abortSignal?.aborted) return;
         if (!features.length) {
-          buildProceduralCityZones();
+          buildCorridorFillBuildings();
+          buildTrees();
           return;
         }
 
-        // 3 Architectural Zone Wall Buckets + 1 Merged Roof Bucket + 1 Kanopi InstancedMesh = 5 draw calls (< 6)
         const wallBuckets = [
-          { pos: [], norm: [], uv: [], idx: [] }, // 0: Sudirman-Tamansari commercial ruko
-          { pos: [], norm: [], uv: [], idx: [] }, // 1: Diponegoro-Blotongan colonial white/cream
-          { pos: [], norm: [], uv: [], idx: [] }, // 2: JLS highland cafes & warehouses
+          { pos: [], norm: [], uv: [], idx: [] }, // 0: Tamansari - Jl. Jend. Sudirman commercial ruko
+          { pos: [], norm: [], uv: [], idx: [] }, // 1: Civic / Tingkir boulevard
+          { pos: [], norm: [], uv: [], idx: [] }, // 2: JLS highland cafes & homes
         ];
         const roofPos = [];
         const roofNorm = [];
@@ -874,7 +950,6 @@ export function buildSalatigaEnvironment(scene, ctx) {
           b.idx.push(base, base + 1, base + 2);
         };
 
-        let countAdded = 0;
         for (let fIdx = 0; fIdx < features.length; fIdx++) {
           const feat = features[fIdx];
           const geom = feat?.geometry;
@@ -904,10 +979,9 @@ export function buildSalatigaEnvironment(scene, ctx) {
           cx /= nPts;
           cz /= nPts;
 
-          if (Math.abs(cx) > 1750 || Math.abs(cz) > 1750) continue;
-
-          // Check minimum edge/vertex distance to track centerline strictly within [12m, 140m]
+          // Strict active-track corridor check across all vertices, edge midpoints & centroid
           let minEdgeDistSq = Infinity;
+          let maxVertDistSq = 0;
           let nearestRoadIdx = 0;
           let maxRadSq = 0;
           for (let k = 0; k < nPts; k++) {
@@ -921,6 +995,8 @@ export function buildSalatigaEnvironment(scene, ctx) {
               minEdgeDistSq = nV.distSq;
               nearestRoadIdx = nV.idx;
             }
+            if (nV.distSq > maxVertDistSq) maxVertDistSq = nV.distSq;
+
             const mx = (x0 + x1) * 0.5;
             const mz = (z0 + z1) * 0.5;
             const nM = nearestTrackFast(mx, mz);
@@ -930,59 +1006,44 @@ export function buildSalatigaEnvironment(scene, ctx) {
             }
           }
           const radius = Math.sqrt(maxRadSq);
-          if (radius < 1.8 || radius > 68) continue;
-
-          const minEdgeDist = Math.sqrt(minEdgeDistSq);
-          if (minEdgeDist < 12.0 || minEdgeDist > 140.0) continue;
-
-          let hitsLandmark = false;
-          for (const lz of landmarkClearZones) {
-            if ((cx - lz.x) ** 2 + (cz - lz.z) ** 2 < lz.radSq) {
-              hitsLandmark = true;
-              break;
-            }
-          }
-          if (hitsLandmark) continue;
+          if (radius < 1.8 || radius > 34) continue;
 
           const nearC = nearestTrackFast(cx, cz);
-          const roadRefIdx = nearC.idx ?? nearestRoadIdx;
-          const prog = (((roadRefIdx / SAMPLE_COUNT - startU) % 1) + 1) % 1;
-          const bType = String(feat.properties?.building || '');
+          const centDist = Math.sqrt(nearC.distSq);
+          const minEdgeDist = Math.sqrt(minEdgeDistSq);
+          const maxVertDist = Math.sqrt(maxVertDistSq);
 
-          // Zone classification:
-          // 0 = Sudirman-Tamansari commercial ruko
-          // 1 = Diponegoro-Blotongan colonial white/cream
-          // 2 = JLS highland cafes & warehouses
+          // Must sit strictly 6m-55m from road edge and never sprawl past 75m from centerline
+          if (minEdgeDist < MIN_BLDG_CENTER_DIST || centDist > MAX_BLDG_CENTER_DIST || maxVertDist > HARD_CUTOFF_CENTER_DIST) {
+            continue;
+          }
+
+          const roadRefIdx = nearC.idx ?? nearestRoadIdx;
+          const uRoute = roadRefIdx / uDenom;
+          if (hitsLandmarkZone(cx, cz, uRoute, 0)) continue;
+
+          const bType = String(feat.properties?.building || '');
           let zoneIdx = 2;
-          if (prog >= 0.60 && prog <= 0.785) {
+          if (uRoute < 0.35 || bType === 'commercial' || bType === 'retail' || bType === 'office') {
             zoneIdx = 0;
-          } else if (prog > 0.785 || prog < 0.14) {
-            zoneIdx = 1;
-          } else if (bType === 'commercial' || bType === 'retail' || bType === 'office') {
-            zoneIdx = 0;
-          } else if (bType === 'university' || bType === 'school' || bType === 'hospital' || bType === 'public') {
+          } else if (uRoute < 0.62 || bType === 'university' || bType === 'school' || bType === 'hospital' || bType === 'public') {
             zoneIdx = 1;
           }
 
-          // Height: building:levels (1..6) or zone fallback at 3.7m/floor (min 4.2m)
           const rawLevels = Number(feat.properties?.['building:levels']);
           const hSeed = hash2D(cx * 0.13, cz * 0.17);
           let levels;
           if (Number.isFinite(rawLevels) && rawLevels >= 1 && rawLevels <= 6) {
             levels = rawLevels;
           } else if (zoneIdx === 0) {
-            levels = hSeed > 0.42 || bType === 'commercial' || bType === 'retail' ? 3 : 2;
+            levels = hSeed > 0.45 || bType === 'commercial' || bType === 'retail' ? 3 : 2;
           } else if (zoneIdx === 1) {
-            levels =
-              bType === 'university' || bType === 'hospital'
-                ? hSeed > 0.5 ? 3 : 2
-                : hSeed > 0.38 ? 2 : 1;
+            levels = hSeed > 0.42 ? 2 : 1;
           } else {
-            levels = hSeed > 0.62 ? 2 : 1;
+            levels = hSeed > 0.65 ? 2 : 1;
           }
-          const buildingH = Math.max(4.2, levels * 3.7);
+          const buildingH = Math.max(3.5, levels * 3.5);
 
-          // Snap building base cleanly to nearest track / terrain height with -2.4m foundation skirt
           const trackY = pos[roadRefIdx].y;
           const terrainY = getTerrainHeight(cx, cz);
           const groundY = Math.min(terrainY, trackY - 0.35);
@@ -996,7 +1057,6 @@ export function buildSalatigaEnvironment(scene, ctx) {
           const toRoadX = roadP.x - cx;
           const toRoadZ = roadP.z - cz;
 
-          // Extrude polygon walls
           for (let k = 0; k < nPts; k++) {
             const [x0, z0] = worldPts[k];
             const [x1, z1] = worldPts[(k + 1) % nPts];
@@ -1015,7 +1075,7 @@ export function buildSalatigaEnvironment(scene, ctx) {
             pushTri(wb, x0, baseY, z0, x1, baseY, z1, x1, topY, z1, nx, 0, nz, 0, 0, uSpan, 0, uSpan, 1);
             pushTri(wb, x0, baseY, z0, x1, topY, z1, x0, topY, z0, nx, 0, nz, 0, 0, uSpan, 1, 0, 1);
 
-            if (zoneIdx === 0 && minEdgeDist <= 42 && eLen >= 3.2 && eLen <= 26) {
+            if (zoneIdx === 0 && minEdgeDist <= 38 && eLen >= 3.2 && eLen <= 26) {
               const dotR = nx * toRoadX + nz * toRoadZ;
               if (dotR > roadFaceDot) {
                 roadFaceDot = dotR;
@@ -1040,7 +1100,6 @@ export function buildSalatigaEnvironment(scene, ctx) {
             });
           }
 
-          // Proper triangulated roof cap flush at wall topY (watertight on L-shaped & concave footprints)
           const triFaces = THREE.ShapeUtils.triangulateShape(shapePts, []);
           for (const tri of triFaces) {
             const [ia, ib, ic] = tri;
@@ -1054,14 +1113,10 @@ export function buildSalatigaEnvironment(scene, ctx) {
             roofIdx.push(rBase, rBase + 1, rBase + 2);
           }
 
-          countAdded++;
+          markBuildingOccupied(cx, cz);
         }
 
         if (abortSignal?.aborted) return;
-        if (countAdded === 0) {
-          buildProceduralCityZones();
-          return;
-        }
 
         const osmGroup = new THREE.Group();
         osmGroup.name = 'salatiga-osm-buildings';
@@ -1111,11 +1166,16 @@ export function buildSalatigaEnvironment(scene, ctx) {
         }
 
         scene.add(osmGroup);
+
+        // Fill remaining corridor slots along Sudirman South, Tingkir, JLS & Wates Finish
+        buildCorridorFillBuildings();
+        buildTrees();
       })
       .catch((err) => {
         if (!abortSignal?.aborted) {
-          console.warn('Salatiga GeoJSON fallback to procedural salatigaCityZones:', err?.message || err);
-          buildProceduralCityZones();
+          console.warn('Salatiga GeoJSON fallback to corridor fill:', err?.message || err);
+          buildCorridorFillBuildings();
+          buildTrees();
         }
       });
   }
@@ -1123,10 +1183,7 @@ export function buildSalatigaEnvironment(scene, ctx) {
   return {
     waterMaterial: null,
     mountainMistUniform,
-    secondaryBridgeUs: [
-      ((startU + 0.34) % 1),
-      ((startU + 0.74) % 1),
-    ],
+    secondaryBridgeUs: [wrapU(0.32), wrapU(0.72)],
     repairTokenCount: 18,
   };
 }

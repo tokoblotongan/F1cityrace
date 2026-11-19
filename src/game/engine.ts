@@ -210,7 +210,7 @@ function createSkyDome(scene: THREE.Scene, sunDir: THREE.Vector3) {
     `,
   });
 
-  const skyDome = new THREE.Mesh(new THREE.SphereGeometry(7500, 48, 32), skyDomeMat);
+  const skyDome = new THREE.Mesh(new THREE.SphereGeometry(11000, 48, 32), skyDomeMat);
   skyDome.renderOrder = -2;
   skyDome.frustumCulled = false;
   scene.add(skyDome);
@@ -580,7 +580,7 @@ export function startMonacoEngine(
     72,
     window.innerWidth / Math.max(1, window.innerHeight),
     0.1,
-    9500
+    13500
   );
   camera.position.set(0, 6, 14);
 
@@ -777,7 +777,7 @@ export function startMonacoEngine(
 
   function getFogRange() {
     if (currentCircuit === 'salatiga-gp' && currentWeather === 'cerah') {
-      return { near: 420, far: 6200 };
+      return { near: 420, far: 8800 };
     }
     return { near: activePreset.fogNear, far: activePreset.fogFar };
   }
@@ -1644,7 +1644,7 @@ export function startMonacoEngine(
                 : [];
               const pEntry = standingsCopy.find((e: any) => e.isPlayer);
               const pos = raceState.playerPosition || pEntry?.position || standingsCopy.length || 8;
-              const gapText = pEntry?.gapText || '+1 LAP';
+              const gapText = pEntry?.gapText || (trackData?.closedLoop === false ? '+0.000s' : '+1 LAP');
               forcedFinishState = {
                 playerPosition: pos,
                 gapText,
@@ -1795,7 +1795,7 @@ export function startMonacoEngine(
     sun.target.updateMatrixWorld();
 
     // Tunnel atmosphere + dynamic weather crossfade + 3D rain / spray / lightning
-    const inTunnel = carState.u >= tunnel.uStart && carState.u <= tunnel.uEnd;
+    const inTunnel = !!(tunnel && tunnel.uStart >= 0 && carState.u >= tunnel.uStart && carState.u <= tunnel.uEnd);
     const lightningFlash = updateWeatherEffects(dt, inTunnel);
     const k = Math.min(1, 3.6 * dt);
     tunnelMix += ((inTunnel ? 1 : 0) - tunnelMix) * k;

@@ -5,7 +5,7 @@
 // cleanup function for unmount / StrictMode safety.
 // ============================================================================
 
-import { getCircuitConfig } from '../data/circuits.ts';
+import { evalSplineXZ, getCircuitConfig } from '../data/circuits.ts';
 
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -31,30 +31,14 @@ const mapX = new Float32Array(SEG + 1), mapZ = new Float32Array(SEG + 1), cum = 
 let activeCircuit = getCircuitConfig('monaco-gp');
 let PTS = activeCircuit.worldPoints;
 let NP = PTS.length;
-let mapLen = 0, startU = 0;
+let mapLen = 0, startU = 0, finishU = 0;
 const bounds = { minX: 1e9, maxX: -1e9, minZ: 1e9, maxZ: -1e9 };
 let DRZ = [];
 let TUN = null;
 let waterC = [0, 0];
 
-function axisVal(x0, x1, x2, x3, dt0, dt1, dt2, w) {
-  let t1 = (x1 - x0) / dt0 - (x2 - x0) / (dt0 + dt1) + (x2 - x1) / dt1;
-  let t2 = (x2 - x1) / dt1 - (x3 - x1) / (dt1 + dt2) + (x3 - x2) / dt2;
-  t1 *= dt1; t2 *= dt1;
-  const c2 = -3 * x1 + 3 * x2 - 2 * t1 - t2, c3 = 2 * x1 - 2 * x2 + t1 + t2;
-  return ((c3 * w + c2) * w + t1) * w + x1;
-}
 function curvePoint(t) {
-  const p = t * NP, i = Math.floor(p), w = p - i;
-  const P = (k) => PTS[((k % NP) + NP) % NP];
-  const p0 = P(i - 1), p1 = P(i), p2 = P(i + 1), p3 = P(i + 2);
-  const d2 = (a, b) => (a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2;
-  let dt0 = Math.pow(d2(p0, p1), 0.25), dt1 = Math.pow(d2(p1, p2), 0.25), dt2 = Math.pow(d2(p2, p3), 0.25);
-  if (dt1 < 1e-4) dt1 = 1; if (dt0 < 1e-4) dt0 = dt1; if (dt2 < 1e-4) dt2 = dt1;
-  return [
-    axisVal(p0[0], p1[0], p2[0], p3[0], dt0, dt1, dt2, w),
-    axisVal(p0[2], p1[2], p2[2], p3[2], dt0, dt1, dt2, w),
-  ];
+  return evalSplineXZ(PTS, t, activeCircuit.closedLoop !== false);
 }
 function uAtPoint(pt) {
   let best = 0, bd = Infinity;
@@ -65,7 +49,9 @@ function uAtPoint(pt) {
   return best / SEG;
 }
 function uToXY(u) {
-  const target = ((u % 1) + 1) % 1 * mapLen;
+  const closed = activeCircuit.closedLoop !== false;
+  const clampedU = closed ? ((u % 1) + 1) % 1 : clamp(u, 0, 1);
+  const target = clampedU * mapLen;
   let lo = 0, hi = SEG;
   while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] < target) lo = mid + 1; else hi = mid; }
   const i = Math.max(1, lo), f = (target - cum[i - 1]) / Math.max(1e-6, cum[i] - cum[i - 1]);
@@ -75,6 +61,7 @@ function rebuildMinimapGeometry(circuitId = 'monaco-gp') {
   activeCircuit = getCircuitConfig(circuitId);
   PTS = activeCircuit.worldPoints;
   NP = PTS.length;
+  const closed = activeCircuit.closedLoop !== false;
   bounds.minX = 1e9; bounds.maxX = -1e9; bounds.minZ = 1e9; bounds.maxZ = -1e9;
   let px = 0, pz = 0;
   for (let i = 0; i <= SEG; i++) {
@@ -88,10 +75,12 @@ function rebuildMinimapGeometry(circuitId = 'monaco-gp') {
   }
   mapLen = cum[SEG];
   startU = uAtPoint(PTS[activeCircuit.startIndex]);
+  finishU = closed ? startU : Math.max(0.95, 1.0 - 42.0 / Math.max(1, mapLen));
 
+  const drsPad = closed ? 0.008 : 0.004;
   DRZ = activeCircuit.drsPointPairs.map(([aIdx, bIdx]) => [
-    uAtPoint(PTS[aIdx]) + 0.010,
-    uAtPoint(PTS[bIdx]) - 0.008,
+    uAtPoint(PTS[aIdx]) + drsPad,
+    uAtPoint(PTS[bIdx]) - drsPad,
   ]);
 
   if (activeCircuit.tunnelPointPair) {
@@ -176,8 +165,10 @@ function mmRenderBase() {
     g.fill();
   }
 
+  const closed = activeCircuit.closedLoop !== false;
   g.lineJoin = g.lineCap = 'round';
-  mmPath(g, 0, 1); g.closePath();
+  mmPath(g, 0, 1);
+  if (closed) g.closePath();
   g.strokeStyle = activeCircuit.id === 'salatiga-gp' ? 'rgba(34,255,136,0.22)' : 'rgba(0,210,190,0.22)';
   g.lineWidth = 7; g.stroke();
   g.strokeStyle = 'rgba(242,239,230,0.88)'; g.lineWidth = 2.6; g.stroke();
@@ -197,6 +188,16 @@ function mmRenderBase() {
   let dx = sx1 - sx0, dz = sz1 - sz0; const dl = Math.hypot(dx, dz) || 1; dx /= dl; dz /= dl;
   g.strokeStyle = '#ff2d1a'; g.lineWidth = 2.8;
   g.beginPath(); g.moveTo(cx - dz * 6, cy + dx * 6); g.lineTo(cx + dz * 6, cy - dx * 6); g.stroke();
+
+  if (!closed) {
+    const [fx0, fz0] = uToXY(finishU - 0.004), [fx1, fz1] = uToXY(finishU);
+    const [fcx, fcy] = mm.tx(fx1, fz1);
+    let fdx = fx1 - fx0, fdz = fz1 - fz0; const fdl = Math.hypot(fdx, fdz) || 1; fdx /= fdl; fdz /= fdl;
+    g.strokeStyle = '#facc15'; g.lineWidth = 3.2;
+    g.beginPath(); g.moveTo(fcx - fdz * 6.5, fcy + fdx * 6.5); g.lineTo(fcx + fdz * 6.5, fcy - fdx * 6.5); g.stroke();
+    g.fillStyle = '#facc15';
+    g.beginPath(); g.arc(fcx, fcy, 3.2, 0, Math.PI * 2); g.fill();
+  }
 
   g.font = '700 7px "Titillium Web", sans-serif'; g.fillStyle = 'rgba(242,239,230,0.58)';
   for (const lbl of activeCircuit.minimapLabels) {
@@ -219,17 +220,20 @@ export function setHudCircuit(circuitId = 'monaco-gp') {
 function mmDraw(raceState, now) {
   if (!ensureMinimapCanvas()) return;
   const g = mm.ctx;
+  const closed = activeCircuit.closedLoop !== false;
   g.setTransform(mm.dpr, 0, 0, mm.dpr, 0, 0);
   g.clearRect(0, 0, mm.w, mm.h);
   g.drawImage(mm.base, 0, 0, mm.w, mm.h);
   for (const e of raceState.standings) {
-    const u = (((e.progress % 1) + 1) % 1 + startU) % 1;
+    const u = closed
+      ? (((e.progress % 1) + 1) % 1 + startU) % 1
+      : clamp(startU + e.progress * (finishU - startU), 0, 1);
     const [x, z] = uToXY(u); const [cx, cy] = mm.tx(x, z);
     if (e.isPlayer) {
       const pulse = 5.4 + Math.sin(now * 0.006) * 1.1;
       g.beginPath(); g.arc(cx, cy, pulse + 3, 0, Math.PI * 2);
       g.strokeStyle = 'rgba(242,239,230,0.85)'; g.lineWidth = 1.6; g.stroke();
-      const [ax, az] = uToXY(u + 0.003);
+      const [ax, az] = uToXY(closed ? u + 0.003 : Math.min(1, u + 0.003));
       let hx = ax - x, hz = az - z; const hl = Math.hypot(hx, hz) || 1;
       g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + (hx / hl) * 9, cy + (hz / hl) * 9);
       g.strokeStyle = '#f2efe6'; g.lineWidth = 2; g.stroke();
@@ -1009,7 +1013,7 @@ function updateTower(rs) {
     }
     r.lastDriver = e.name;
   }
-  setText(els.towerLaps, `${rs.totalLaps} LAPS`);
+  setText(els.towerLaps, rs.totalLaps === 1 ? `1 STAGE · ${activeCircuit.lengthLabel}` : `${rs.totalLaps} LAPS`);
 }
 
 function updateLapPanel(rs) {
@@ -1052,7 +1056,10 @@ function updateEvents(rs, now) {
     }
     if (!rs.waitingToStart) {
       if (rs.startLights > prevLights) tone(660, 0.14, 0.12);
-      announce(activeCircuit.gpTitle, 'STREET CIRCUIT CHALLENGE · 3 LAPS · 8 CARS', '', 0);
+      const raceLabel = rs.totalLaps === 1
+        ? `POINT-TO-POINT STAGE · ${activeCircuit.lengthLabel} · 8 CARS`
+        : `STREET CIRCUIT CHALLENGE · ${rs.totalLaps} LAPS · 8 CARS`;
+      announce(activeCircuit.gpTitle, raceLabel, '', 0);
     } else if (els.announce) {
       els.announce.className = '';
     }
@@ -1062,7 +1069,7 @@ function updateEvents(rs, now) {
     tone(990, 0.4, 0.16); tone(1320, 0.5, 0.12, 0.05);
     els.hint?.classList.add('dim');
   }
-  if (rs.playerLap > prevLap && !rs.isFinished) {
+  if (rs.totalLaps > 1 && rs.playerLap > prevLap && !rs.isFinished) {
     if (rs.playerLap === rs.totalLaps) {
       announce('FINAL LAP', 'PUSH NOW', 'purple', 2200);
       tone(880, 0.2, 0.1); tone(1174, 0.3, 0.1, 0.12);
@@ -1114,7 +1121,8 @@ function renderFinish(rs) {
   setText(els.finishTitle, p === 1 ? 'VICTORY!' : `P${p} — RACE COMPLETE`);
   els.card?.classList.toggle('win', p === 1);
   const me = rs.standings.find(e => e.isPlayer);
-  setText(els.finishSub, `${activeCircuit.circuitTitle} · ${rs.totalLaps} LAPS · BEST ${fmtTime(me && me.bestLapTime)}`);
+  const stageBadge = rs.totalLaps === 1 ? `${activeCircuit.lengthLabel} STAGE` : `${rs.totalLaps} LAPS`;
+  setText(els.finishSub, `${activeCircuit.circuitTitle} · ${stageBadge} · BEST ${fmtTime(me && me.bestLapTime)}`);
 }
 function openFinish(rs) {
   modalOpen = true; finishSig = '';
@@ -1140,7 +1148,7 @@ function openFinish(rs) {
 }
 function openDnf(rs) {
   dnfOpen = true;
-  setText(els.dnfLap, `LAP ${rs.playerLap} / ${rs.totalLaps}`);
+  setText(els.dnfLap, rs.totalLaps === 1 ? 'STAGE 1 / 1' : `LAP ${rs.playerLap} / ${rs.totalLaps}`);
   setText(els.dnfTime, fmtTime(rs.raceTime || 0));
   setText(els.dnfPos, `P${rs.playerPosition || 1}`);
   els.dnfModal?.classList.add('open');

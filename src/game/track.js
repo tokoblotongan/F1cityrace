@@ -1822,18 +1822,19 @@ function makeYachtHullGeometry() {
   return geo;
 }
 
-function buildRibbon(samples, offsetLeft, offsetRight, yBias, mat) {
+function buildRibbon(samples, offsetLeft, offsetRight, yBias, mat, closedLoop = true) {
   const N = samples.count;
-  const positions = new Float32Array((N + 1) * 2 * 3);
-  const normals = new Float32Array((N + 1) * 2 * 3);
-  const uvs = new Float32Array((N + 1) * 2 * 2);
+  const segs = closedLoop ? N : Math.max(1, N - 1);
+  const positions = new Float32Array((segs + 1) * 2 * 3);
+  const normals = new Float32Array((segs + 1) * 2 * 3);
+  const uvs = new Float32Array((segs + 1) * 2 * 2);
   const indices = [];
 
-  for (let i = 0; i <= N; i++) {
-    const idx = i % N;
+  for (let i = 0; i <= segs; i++) {
+    const idx = closedLoop ? i % N : Math.min(N - 1, i);
     const p = samples.pos[idx];
     const r = samples.right[idx];
-    const vCoord = i / N;
+    const vCoord = i / segs;
 
     const lx = p.x + r.x * offsetLeft;
     const ly = p.y + yBias;
@@ -1860,7 +1861,7 @@ function buildRibbon(samples, offsetLeft, offsetRight, yBias, mat) {
     uvs[uvBase + 2] = 1;
     uvs[uvBase + 3] = vCoord;
 
-    if (i < N) {
+    if (i < segs) {
       const a = i * 2;
       const b = a + 1;
       const c = a + 2;
@@ -1880,8 +1881,9 @@ function buildRibbon(samples, offsetLeft, offsetRight, yBias, mat) {
   return mesh;
 }
 
-function buildWallRibbon(samples, latOffset, height, thickness, mat) {
+function buildWallRibbon(samples, latOffset, height, thickness, mat, closedLoop = true) {
   const N = samples.count;
+  const segs = closedLoop ? N : Math.max(1, N - 1);
   const positions = [];
   const uvs = [];
   const indices = [];
@@ -1906,11 +1908,11 @@ function buildWallRibbon(samples, latOffset, height, thickness, mat) {
   ];
   const ptsPerRing = profile.length + 2; // + outerTop, outerBot
 
-  for (let i = 0; i <= N; i++) {
-    const idx = i % N;
+  for (let i = 0; i <= segs; i++) {
+    const idx = closedLoop ? i % N : Math.min(N - 1, i);
     const p = samples.pos[idx];
     const r = samples.right[idx];
-    const uCoord = i / N;
+    const uCoord = i / segs;
     const y0 = p.y - 0.15;
     const hSpan = height + 0.15;
 
@@ -1927,7 +1929,7 @@ function buildWallRibbon(samples, latOffset, height, thickness, mat) {
     positions.push(ox, y0, oz);
     uvs.push(uCoord, 0);
 
-    if (i < N) {
+    if (i < segs) {
       const b = i * ptsPerRing;
       const nb = (i + 1) * ptsPerRing;
       for (let s = 0; s < ptsPerRing - 1; s++) {
@@ -1955,9 +1957,10 @@ function buildWallRibbon(samples, latOffset, height, thickness, mat) {
   return mesh;
 }
 
-function buildCatchFenceRibbon(samples, latOffset, uStart, uEnd, totalLength, mat) {
-  const startIdx = Math.max(0, Math.floor(uStart * samples.count));
-  const endIdx = Math.min(samples.count, Math.ceil(uEnd * samples.count));
+function buildCatchFenceRibbon(samples, latOffset, uStart, uEnd, totalLength, mat, closedLoop = true) {
+  const uDenom = closedLoop ? samples.count : Math.max(1, samples.count - 1);
+  const startIdx = Math.max(0, Math.floor(uStart * uDenom));
+  const endIdx = Math.min(closedLoop ? samples.count : samples.count - 1, Math.ceil(uEnd * uDenom));
   if (endIdx <= startIdx) return null;
 
   const sideSign = Math.sign(latOffset) || 1;
@@ -1969,7 +1972,7 @@ function buildCatchFenceRibbon(samples, latOffset, uStart, uEnd, totalLength, ma
 
   // 3 vertical levels per slice: Armco top (1.15m), vertical top (3.25m), angled inward lip (3.78m, 0.34m inward)
   for (let i = startIdx; i <= endIdx; i++) {
-    const idx = i % samples.count;
+    const idx = closedLoop ? i % samples.count : Math.min(samples.count - 1, i);
     const p = samples.pos[idx];
     const r = samples.right[idx];
     const uFrac = ((i - startIdx) / (endIdx - startIdx)) * repeatU;
@@ -2057,14 +2060,24 @@ export function buildMonacoTrack(scene) {
 export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   const cfg = getCircuitConfig(circuitId);
   const isSalatiga = cfg.id === 'salatiga-gp';
+  const closedLoop = cfg.closedLoop !== false;
+  const roadHalfWidth = (cfg.roadWidthMeters ?? 16.8) * 0.5;
+  const kerbWidth = cfg.kerbWidthMeters ?? 1.05;
+  const barrierOffset = cfg.barrierOffsetMeters ?? (roadHalfWidth + 1.15);
   const points = cfg.worldPoints.map((p) => new THREE.Vector3(p[0], p[1], p[2]));
-  const SAMPLE_COUNT = isSalatiga ? 1600 : 1200;
+  const SAMPLE_COUNT = isSalatiga ? 1800 : 1200;
+  const uDenom = closedLoop ? SAMPLE_COUNT : SAMPLE_COUNT - 1;
 
-  const rawSteps = isSalatiga ? 3200 : 2400;
+  const rawSteps = isSalatiga ? 3600 : 2400;
+  const openCurve = closedLoop
+    ? null
+    : new THREE.CatmullRomCurve3(points, false, 'centripetal', 0.5);
   const rawPts = [];
   const rawCum = new Float32Array(rawSteps + 1);
   for (let i = 0; i <= rawSteps; i++) {
-    const p = evalCentripetal(points, i / rawSteps);
+    const p = closedLoop
+      ? evalCentripetal(points, i / rawSteps)
+      : openCurve.getPoint(i / rawSteps);
     rawPts.push(p);
     if (i > 0) rawCum[i] = rawCum[i - 1] + p.distanceTo(rawPts[i - 1]);
   }
@@ -2076,7 +2089,7 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   let cursor = 0;
 
   for (let i = 0; i < SAMPLE_COUNT; i++) {
-    const target = (i / SAMPLE_COUNT) * totalLength;
+    const target = (i / uDenom) * totalLength;
     while (cursor < rawSteps - 1 && rawCum[cursor + 1] < target) cursor++;
     const segLen = Math.max(1e-6, rawCum[cursor + 1] - rawCum[cursor]);
     const f = (target - rawCum[cursor]) / segLen;
@@ -2085,8 +2098,12 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   }
 
   for (let i = 0; i < SAMPLE_COUNT; i++) {
-    const pPrev = pos[(i - 1 + SAMPLE_COUNT) % SAMPLE_COUNT];
-    const pNext = pos[(i + 1) % SAMPLE_COUNT];
+    const pPrev = closedLoop
+      ? pos[(i - 1 + SAMPLE_COUNT) % SAMPLE_COUNT]
+      : pos[Math.max(0, i - 1)];
+    const pNext = closedLoop
+      ? pos[(i + 1) % SAMPLE_COUNT]
+      : pos[Math.min(SAMPLE_COUNT - 1, i + 1)];
     const t = new THREE.Vector3().subVectors(pNext, pPrev).normalize();
     tan.push(t);
     const r = new THREE.Vector3(-t.z, 0, t.x).normalize();
@@ -2105,18 +2122,29 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
         best = i;
       }
     }
-    return best / SAMPLE_COUNT;
+    return best / uDenom;
   };
 
+  const wrapU = (u) =>
+    closedLoop ? (((u % 1) + 1) % 1) : THREE.MathUtils.clamp(u, 0, 1);
+
+  const idxAtU = (u) =>
+    closedLoop
+      ? ((Math.round(u * SAMPLE_COUNT) % SAMPLE_COUNT) + SAMPLE_COUNT) % SAMPLE_COUNT
+      : THREE.MathUtils.clamp(Math.round(u * uDenom), 0, SAMPLE_COUNT - 1);
+
   const startU = uAtPoint(points[cfg.startIndex]);
+  const finishLineU = closedLoop
+    ? startU
+    : Math.max(0.95, 1.0 - 42.0 / Math.max(1, totalLength));
   const tunnelStart = cfg.tunnelPointPair ? uAtPoint(points[cfg.tunnelPointPair[0]]) - 0.006 : -1;
   const tunnelEnd = cfg.tunnelPointPair ? uAtPoint(points[cfg.tunnelPointPair[1]]) + 0.006 : -1;
   const hasTunnel = tunnelStart >= 0 && tunnelEnd > tunnelStart;
 
   const drsZones = isSalatiga
     ? cfg.drsPointPairs.map(([aIdx, bIdx]) => {
-        const ua = uAtPoint(points[aIdx]) + 0.008;
-        const ub = uAtPoint(points[bIdx]) - 0.008;
+        const ua = THREE.MathUtils.clamp(uAtPoint(points[aIdx]) + 0.004, 0.02, 0.96);
+        const ub = THREE.MathUtils.clamp(uAtPoint(points[bIdx]) - 0.004, 0.03, 0.97);
         return { uStart: Math.min(ua, ub), uEnd: Math.max(ua, ub) };
       })
     : [
@@ -2141,7 +2169,7 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
     metalness: 0.05,
     envMapIntensity: 0.7,
   });
-  scene.add(buildRibbon(samples, -HALF_WIDTH, HALF_WIDTH, 0.0, asphaltMat));
+  scene.add(buildRibbon(samples, -roadHalfWidth, roadHalfWidth, 0.0, asphaltMat, closedLoop));
 
   const curbTex = makeCurbTexture();
   curbTex.repeat.set(1, Math.max(280, Math.round(totalLength / 8.6)));
@@ -2151,8 +2179,8 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
     metalness: 0.04,
     envMapIntensity: 0.65,
   });
-  scene.add(buildRibbon(samples, -HALF_WIDTH - 1.05, -HALF_WIDTH + 0.05, 0.025, curbMat));
-  scene.add(buildRibbon(samples, HALF_WIDTH - 0.05, HALF_WIDTH + 1.05, 0.025, curbMat));
+  scene.add(buildRibbon(samples, -roadHalfWidth - kerbWidth, -roadHalfWidth + 0.05, 0.025, curbMat, closedLoop));
+  scene.add(buildRibbon(samples, roadHalfWidth - 0.05, roadHalfWidth + kerbWidth, 0.025, curbMat, closedLoop));
 
   // Safety barriers: Triple-Beam Corrugated Armco Steel Guardrails
   const armcoTex = makeArmcoTextures();
@@ -2168,11 +2196,11 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
     roughness: 0.35,
     metalness: 0.75,
   });
-  scene.add(buildWallRibbon(samples, -HALF_WIDTH - 1.15, 1.15, 0.45, barrierMat));
-  scene.add(buildWallRibbon(samples, HALF_WIDTH + 1.15, 1.15, 0.45, barrierMat));
+  scene.add(buildWallRibbon(samples, -barrierOffset, 1.15, 0.45, barrierMat, closedLoop));
+  scene.add(buildWallRibbon(samples, barrierOffset, 1.15, 0.45, barrierMat, closedLoop));
 
   if (isSalatiga) {
-    // Solid roadbed shoulder & sloped embankment skirts so elevated JLS sections never float or clip
+    // Solid roadbed shoulder & sloped embankment skirts so elevated JLS climbs never float or clip
     const shoulderMat = new THREE.MeshStandardMaterial({
       color: 0x3b424b,
       roughness: 0.88,
@@ -2183,18 +2211,18 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
       roughness: 0.94,
       metalness: 0.0,
     });
-    scene.add(buildRibbon(samples, -HALF_WIDTH - 2.1, HALF_WIDTH + 2.1, -0.055, shoulderMat));
+    scene.add(buildRibbon(samples, -barrierOffset - 1.1, barrierOffset + 1.1, -0.055, shoulderMat, closedLoop));
 
     const buildEmbankmentSkirt = (innerOff, outerOff, topBias, botBias) => {
-      const N = samples.count;
-      const positions = new Float32Array((N + 1) * 2 * 3);
-      const uvs = new Float32Array((N + 1) * 2 * 2);
+      const segs = closedLoop ? samples.count : samples.count - 1;
+      const positions = new Float32Array((segs + 1) * 2 * 3);
+      const uvs = new Float32Array((segs + 1) * 2 * 2);
       const indices = [];
-      for (let i = 0; i <= N; i++) {
-        const idx = i % N;
+      for (let i = 0; i <= segs; i++) {
+        const idx = closedLoop ? i % samples.count : i;
         const p = samples.pos[idx];
         const r = samples.right[idx];
-        const vCoord = i / N;
+        const vCoord = i / segs;
         const base = i * 6;
         positions[base] = p.x + r.x * innerOff;
         positions[base + 1] = p.y + topBias;
@@ -2205,7 +2233,7 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
         const uvBase = i * 4;
         uvs[uvBase] = 0; uvs[uvBase + 1] = vCoord;
         uvs[uvBase + 2] = 1; uvs[uvBase + 3] = vCoord;
-        if (i < N) {
+        if (i < segs) {
           const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
           if (outerOff > innerOff) indices.push(a, b, c, b, d, c);
           else indices.push(a, c, b, b, c, d);
@@ -2220,24 +2248,40 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
       m.receiveShadow = true;
       return m;
     };
-    scene.add(buildEmbankmentSkirt(-HALF_WIDTH - 2.0, -HALF_WIDTH - 9.5, -0.06, -5.8));
-    scene.add(buildEmbankmentSkirt(HALF_WIDTH + 2.0, HALF_WIDTH + 9.5, -0.06, -5.8));
+    scene.add(buildEmbankmentSkirt(-barrierOffset - 1.0, -barrierOffset - 10.5, -0.06, -7.2));
+    scene.add(buildEmbankmentSkirt(barrierOffset + 1.0, barrierOffset + 10.5, -0.06, -7.2));
+  }
+
+  // Seal open stage ends (Start buffer behind Tamansari & runoff buffer past Wates Finish)
+  if (!closedLoop) {
+    const capWallGeo = new THREE.BoxGeometry(barrierOffset * 2 + 0.6, 1.35, 1.2);
+    const capWallMat = new THREE.MeshStandardMaterial({ color: 0xe10600, roughness: 0.58 });
+    for (const endIdx of [0, SAMPLE_COUNT - 1]) {
+      const ep = pos[endIdx];
+      const et = tan[endIdx];
+      const cap = new THREE.Mesh(capWallGeo, capWallMat);
+      cap.position.set(ep.x, ep.y + 0.65, ep.z);
+      cap.rotation.y = Math.atan2(-et.x, -et.z);
+      cap.castShadow = true;
+      cap.receiveShadow = true;
+      scene.add(cap);
+    }
   }
 
   // Vertical Steel I-Beam Support Posts (single InstancedMesh)
   const postDummy = new THREE.Object3D();
   const iBeamSpecs = [];
-  const postStepU = (isSalatiga ? 4.2 : 2.5) / totalLength;
-  for (let u = 0; u < 1; u += postStepU) {
+  const postStepU = (isSalatiga ? 4.8 : 2.5) / totalLength;
+  for (let u = 0; u <= (closedLoop ? 0.9999 : 1); u += postStepU) {
     if (hasTunnel && u >= tunnelStart && u <= tunnelEnd) continue;
-    const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
+    const idx = idxAtU(u);
     const p = pos[idx];
     const r = right[idx];
     for (const side of [-1, 1]) {
       iBeamSpecs.push({
-        x: p.x + r.x * side * (HALF_WIDTH + 1.38),
+        x: p.x + r.x * side * (barrierOffset + 0.24),
         y: p.y,
-        z: p.z + r.z * side * (HALF_WIDTH + 1.38),
+        z: p.z + r.z * side * (barrierOffset + 0.24),
         yaw: Math.atan2(-side * r.x, -side * r.z),
       });
     }
@@ -2277,8 +2321,8 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   });
   const catchFenceZones = isSalatiga
     ? [
-        { uStart: Math.max(0, startU - 0.03), uEnd: Math.min(1, startU + 0.07), sides: [-1, 1] },
-        { uStart: 0.65, uEnd: 0.85, sides: [-1, 1] },
+        { uStart: Math.max(0, startU - 0.012), uEnd: Math.min(1, startU + 0.05), sides: [-1, 1] },
+        { uStart: Math.max(0, finishLineU - 0.04), uEnd: 1.0, sides: [-1, 1] },
       ]
     : [
         { uStart: 0.0, uEnd: 0.145, sides: [-1, 1] },
@@ -2292,22 +2336,23 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
     for (const side of zone.sides) {
       const fenceMesh = buildCatchFenceRibbon(
         samples,
-        side * (HALF_WIDTH + 1.25),
+        side * (barrierOffset + 0.10),
         zone.uStart,
         zone.uEnd,
         totalLength,
-        catchFenceMat
+        catchFenceMat,
+        closedLoop
       );
       if (fenceMesh) scene.add(fenceMesh);
 
       for (let u = zone.uStart; u <= zone.uEnd; u += fencePoleStepU) {
-        const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
+        const idx = idxAtU(u);
         const p = pos[idx];
         const r = right[idx];
         fencePoleSpecs.push({
-          x: p.x + r.x * side * (HALF_WIDTH + 1.28),
+          x: p.x + r.x * side * (barrierOffset + 0.14),
           y: p.y,
-          z: p.z + r.z * side * (HALF_WIDTH + 1.28),
+          z: p.z + r.z * side * (barrierOffset + 0.14),
           yaw: Math.atan2(-side * r.x, -side * r.z),
         });
       }
@@ -2336,11 +2381,11 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   // Cushioned Tecpro Impact Barriers at Sharp Corner Run-Offs (InstancedMesh)
   const tecproCorners = isSalatiga
     ? [
-        { u: uAtPoint(points[3]), side: 1, count: 6, blueTheme: false },
-        { u: uAtPoint(points[11]), side: 1, count: 6, blueTheme: true },
-        { u: uAtPoint(points[12]), side: -1, count: 5, blueTheme: false },
-        { u: uAtPoint(points[17]), side: 1, count: 6, blueTheme: true },
-        { u: uAtPoint(points[0]), side: 1, count: 6, blueTheme: false },
+        { u: uAtPoint(points[Math.min(54, points.length - 1)]), side: -1, count: 5, blueTheme: true },
+        { u: uAtPoint(points[Math.min(158, points.length - 1)]), side: -1, count: 8, blueTheme: false },
+        { u: uAtPoint(points[Math.min(205, points.length - 1)]), side: 1, count: 5, blueTheme: true },
+        { u: uAtPoint(points[Math.min(248, points.length - 1)]), side: -1, count: 6, blueTheme: false },
+        { u: finishLineU, side: 1, count: 6, blueTheme: true },
       ]
     : [
         { u: uAtPoint(points[4]), side: -1, count: 6, blueTheme: false },
@@ -2358,16 +2403,16 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   for (const tc of tecproCorners) {
     const startBlockU = tc.u - (tc.count * 0.5) * blockStepU;
     for (let k = 0; k < tc.count; k++) {
-      const u = ((startBlockU + k * blockStepU) % 1 + 1) % 1;
-      const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
+      const u = wrapU(startBlockU + k * blockStepU);
+      const idx = idxAtU(u);
       const p = pos[idx];
       const r = right[idx];
       const colHex =
         k % 2 === 1 ? 0xf2efe6 : tc.blueTheme ? 0x0057b8 : 0xe10600;
       tecproSpecs.push({
-        x: p.x + r.x * tc.side * (HALF_WIDTH + 0.72),
+        x: p.x + r.x * tc.side * (roadHalfWidth + 0.72),
         y: p.y,
-        z: p.z + r.z * tc.side * (HALF_WIDTH + 0.72),
+        z: p.z + r.z * tc.side * (roadHalfWidth + 0.72),
         yaw: Math.atan2(-tc.side * r.x, -tc.side * r.z),
         col: colHex,
       });
@@ -2400,10 +2445,9 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   // Marshal Braking Distance Marker Boards (150, 100, 50m before major corners)
   const brakingZones = isSalatiga
     ? [
-        { cornerU: uAtPoint(points[3]), side: -1 },
-        { cornerU: uAtPoint(points[11]), side: -1 },
-        { cornerU: uAtPoint(points[17]), side: -1 },
-        { cornerU: uAtPoint(points[0]), side: -1 },
+        { cornerU: uAtPoint(points[Math.min(158, points.length - 1)]), side: -1 },
+        { cornerU: uAtPoint(points[Math.min(248, points.length - 1)]), side: -1 },
+        { cornerU: finishLineU, side: -1 },
       ]
     : [
         { cornerU: uAtPoint(points[4]), side: -1 },
@@ -2415,14 +2459,16 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   const boardPostSpecs = [];
   for (const bz of brakingZones) {
     for (const [label, metersBack] of [['150', 150], ['100', 100], ['50', 50]]) {
-      const u = ((bz.cornerU - metersBack / totalLength) % 1 + 1) % 1;
+      const rawU = bz.cornerU - metersBack / totalLength;
+      if (!closedLoop && rawU < 0.005) continue;
+      const u = wrapU(rawU);
       if (hasTunnel && u >= tunnelStart && u <= tunnelEnd) continue;
-      const idx = Math.floor(u * SAMPLE_COUNT) % SAMPLE_COUNT;
+      const idx = idxAtU(u);
       const p = pos[idx];
       const r = right[idx];
       const t = tan[idx];
-      const bx = p.x + r.x * bz.side * (HALF_WIDTH + 1.48);
-      const bzz = p.z + r.z * bz.side * (HALF_WIDTH + 1.48);
+      const bx = p.x + r.x * bz.side * (barrierOffset + 0.34);
+      const bzz = p.z + r.z * bz.side * (barrierOffset + 0.34);
       const faceYaw = Math.atan2(-t.x, -t.z);
       distBoardBuckets[label].push({ x: bx, y: p.y + 1.82, z: bzz, yaw: faceYaw });
       boardPostSpecs.push({ x: bx, y: p.y + 0.9, z: bzz, yaw: faceYaw });
@@ -2477,11 +2523,11 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
     polygonOffsetUnits: -1,
   });
   for (const z of drsZones) {
-    const startIdx = Math.floor(z.uStart * SAMPLE_COUNT);
-    const p = pos[startIdx % SAMPLE_COUNT];
-    const r = right[startIdx % SAMPLE_COUNT];
-    const t = tan[startIdx % SAMPLE_COUNT];
-    const drsLine = new THREE.Mesh(new THREE.BoxGeometry(HALF_WIDTH * 1.9, 0.04, 0.65), drsMat);
+    const startIdxZ = idxAtU(z.uStart);
+    const p = pos[startIdxZ];
+    const r = right[startIdxZ];
+    const t = tan[startIdxZ];
+    const drsLine = new THREE.Mesh(new THREE.BoxGeometry(roadHalfWidth * 1.9, 0.04, 0.65), drsMat);
     drsLine.position.set(p.x, p.y + 0.03, p.z);
     drsLine.rotation.y = Math.atan2(-t.x, -t.z);
     scene.add(drsLine);
@@ -2491,22 +2537,22 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
       new THREE.BoxGeometry(0.3, 1.1, 2.6),
       new THREE.MeshStandardMaterial({ color: 0x0b1612, emissive: 0x10b981, emissiveIntensity: 0.8 })
     );
-    board.position.set(p.x + r.x * (HALF_WIDTH + 1.5), p.y + 2.2, p.z + r.z * (HALF_WIDTH + 1.5));
+    board.position.set(p.x + r.x * (barrierOffset + 0.36), p.y + 2.2, p.z + r.z * (barrierOffset + 0.36));
     board.rotation.y = Math.atan2(-t.x, -t.z);
     scene.add(board);
   }
 
   // Start / Finish chequered strip & painted grid boxes
-  const startIdx = Math.round(startU * SAMPLE_COUNT) % SAMPLE_COUNT;
+  const startIdx = idxAtU(startU);
   const sp = pos[startIdx];
   const st = tan[startIdx];
-  const sr = right[startIdx];
   const startYaw = Math.atan2(-st.x, -st.z);
 
+  const sfTex = makeStartFinishTexture();
   const sfStrip = new THREE.Mesh(
-    new THREE.PlaneGeometry(HALF_WIDTH * 1.9, 3.2),
+    new THREE.PlaneGeometry(roadHalfWidth * 1.9, 3.2),
     new THREE.MeshStandardMaterial({
-      map: makeStartFinishTexture(),
+      map: sfTex,
       roughness: 0.6,
       polygonOffset: true,
       polygonOffsetFactor: -1,
@@ -2531,8 +2577,8 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
     polygonOffsetFactor: -1,
   });
   for (let slot = 0; slot < 8; slot++) {
-    const gu = (startU - poleLeadU - slot * gridStepU + 1) % 1;
-    const gIdx = Math.round(gu * SAMPLE_COUNT) % SAMPLE_COUNT;
+    const gu = wrapU(startU - poleLeadU - slot * gridStepU);
+    const gIdx = idxAtU(gu);
     const gp = pos[gIdx];
     const gr = right[gIdx];
     const gt = tan[gIdx];
@@ -2583,13 +2629,15 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   gantryGroup.rotation.y = startYaw;
 
   const pylonMat = new THREE.MeshStandardMaterial({ color: 0x1e2430, metalness: 0.7, roughness: 0.35 });
+  const pylonX = barrierOffset + 0.55;
   const leftPylon = new THREE.Mesh(new THREE.BoxGeometry(0.8, 7.6, 1.0), pylonMat);
-  leftPylon.position.set(-(HALF_WIDTH + 1.6), 3.8, 0);
+  leftPylon.position.set(-pylonX, 3.8, 0);
   const rightPylon = leftPylon.clone();
-  rightPylon.position.x = HALF_WIDTH + 1.6;
-  const beam = new THREE.Mesh(new THREE.BoxGeometry((HALF_WIDTH + 1.8) * 2, 1.2, 1.2), pylonMat);
+  rightPylon.position.x = pylonX;
+  const beam = new THREE.Mesh(new THREE.BoxGeometry((pylonX + 0.2) * 2, 1.2, 1.2), pylonMat);
   beam.position.set(0, 7.2, 0);
-  const banner = new THREE.Mesh(new THREE.BoxGeometry(15.6, 1.26, 1.32), topCoolGantryMats);
+  const bannerW = Math.min(15.6, pylonX * 1.82);
+  const banner = new THREE.Mesh(new THREE.BoxGeometry(bannerW, 1.26, 1.32), topCoolGantryMats);
   banner.position.set(0, 7.24, 0);
   banner.castShadow = true;
   gantryGroup.add(leftPylon, rightPylon, beam, banner);
@@ -2613,12 +2661,94 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   }
   scene.add(gantryGroup);
 
+  // Point-to-Point Stage FINISH ARCH / CHEQUERED GATE at Wates (finishLineU)
+  if (!closedLoop) {
+    const fIdx = idxAtU(finishLineU);
+    const fp = pos[fIdx];
+    const ft = tan[fIdx];
+    const finishYaw = Math.atan2(-ft.x, -ft.z);
+
+    const finishStrip = new THREE.Mesh(
+      new THREE.PlaneGeometry(roadHalfWidth * 1.92, 3.6),
+      new THREE.MeshStandardMaterial({
+        map: sfTex,
+        roughness: 0.55,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+      })
+    );
+    finishStrip.rotation.order = 'YXZ';
+    finishStrip.rotation.y = finishYaw;
+    finishStrip.rotation.x = -Math.PI / 2;
+    finishStrip.position.set(fp.x, fp.y + 0.032, fp.z);
+    finishStrip.receiveShadow = true;
+    scene.add(finishStrip);
+
+    const finishTex = makeSponsorBannerTexture(
+      '#0b1320',
+      '#facc15',
+      'FINISH · WATES',
+      'SALATIGA 7.9 KM STAGE COMPLETE'
+    );
+    const finishBannerMat = new THREE.MeshStandardMaterial({
+      map: finishTex,
+      emissiveMap: finishTex,
+      emissive: 0xffffff,
+      emissiveIntensity: 0.52,
+      roughness: 0.3,
+    });
+    const finishMats = [
+      gantryTrimMat,
+      gantryTrimMat,
+      gantryTrimMat,
+      gantryTrimMat,
+      finishBannerMat,
+      finishBannerMat,
+    ];
+    const goldPylonMat = new THREE.MeshStandardMaterial({
+      color: 0xfacc15,
+      emissive: 0xb45309,
+      emissiveIntensity: 0.28,
+      metalness: 0.72,
+      roughness: 0.25,
+    });
+    const finishGroup = new THREE.Group();
+    finishGroup.position.copy(fp);
+    finishGroup.rotation.y = finishYaw;
+
+    const fLeft = new THREE.Mesh(new THREE.BoxGeometry(0.95, 8.2, 1.15), goldPylonMat);
+    fLeft.position.set(-pylonX, 4.1, 0);
+    const fRight = fLeft.clone();
+    fRight.position.x = pylonX;
+    const fBeam = new THREE.Mesh(new THREE.BoxGeometry((pylonX + 0.3) * 2, 1.45, 1.35), pylonMat);
+    fBeam.position.set(0, 7.8, 0);
+    const fBanner = new THREE.Mesh(new THREE.BoxGeometry(bannerW, 1.55, 1.45), finishMats);
+    fBanner.position.set(0, 7.85, 0);
+    fBanner.castShadow = true;
+
+    const beaconMat = new THREE.MeshStandardMaterial({
+      color: 0x22ff88,
+      emissive: 0x22ff88,
+      emissiveIntensity: 2.2,
+      roughness: 0.15,
+    });
+    const beaconGeo = new THREE.SphereGeometry(0.36, 12, 10);
+    for (const bx of [-pylonX, pylonX]) {
+      const beacon = new THREE.Mesh(beaconGeo, beaconMat);
+      beacon.position.set(bx, 8.6, 0);
+      finishGroup.add(beacon);
+    }
+    finishGroup.add(fLeft, fRight, fBeam, fBanner);
+    scene.add(finishGroup);
+  }
+
   // Secondary Overhead Track Sponsor Bridges (TOP COOL)
   const secondaryBridgeUs = isSalatiga
-    ? [uAtPoint(points[8]), uAtPoint(points[13])]
+    ? [uAtPoint(points[Math.min(72, points.length - 1)]), uAtPoint(points[Math.min(188, points.length - 1)])]
     : [uAtPoint(points[7]), uAtPoint(points[26])];
   for (const bu of secondaryBridgeUs) {
-    const bIdx = Math.round(bu * SAMPLE_COUNT) % SAMPLE_COUNT;
+    const bIdx = idxAtU(bu);
     const bp = pos[bIdx];
     const bt = tan[bIdx];
     const bridgeGroup = new THREE.Group();
@@ -2626,12 +2756,12 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
     bridgeGroup.rotation.y = Math.atan2(-bt.x, -bt.z);
 
     const bLeft = new THREE.Mesh(new THREE.BoxGeometry(0.7, 7.4, 0.9), pylonMat);
-    bLeft.position.set(-(HALF_WIDTH + 1.55), 3.7, 0);
+    bLeft.position.set(-pylonX, 3.7, 0);
     const bRight = bLeft.clone();
-    bRight.position.x = HALF_WIDTH + 1.55;
-    const bBeam = new THREE.Mesh(new THREE.BoxGeometry((HALF_WIDTH + 1.75) * 2, 1.0, 1.05), pylonMat);
+    bRight.position.x = pylonX;
+    const bBeam = new THREE.Mesh(new THREE.BoxGeometry((pylonX + 0.2) * 2, 1.0, 1.05), pylonMat);
     bBeam.position.set(0, 7.15, 0);
-    const bBanner = new THREE.Mesh(new THREE.BoxGeometry(15.2, 1.32, 1.24), topCoolGantryMats);
+    const bBanner = new THREE.Mesh(new THREE.BoxGeometry(bannerW, 1.32, 1.24), topCoolGantryMats);
     bBanner.position.set(0, 7.2, 0);
     bBanner.castShadow = true;
     bridgeGroup.add(bLeft, bRight, bBeam, bBanner);
@@ -2697,10 +2827,9 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
 
   if (isSalatiga) {
     // ------------------------------------------------------------------------
-    // Trackside Hero Landmarks for Salatiga GP (Pasar Raya II, Bundaran
-    // Tamansari & Tugu Jam, Rumah Dinas Wali Kota, Gerbang Kampus UKSW)
-    // Positioned cleanly just outside Armco (road edge + 14m..18m), angled
-    // toward oncoming traffic, with hi-res CanvasTexture signage (anisotropy=16)
+    // Trackside Hero Landmarks strictly on the Salatiga -> Wates corridor:
+    // Bundaran Tamansari & Tugu Jam near progress ~0.02 + Pasar Raya II along
+    // Jl. Jend. Sudirman. Positioned just outside Armco barrier, angled toward driver.
     // ------------------------------------------------------------------------
     const buildSalatigaHeroLandmarks = () => {
       const heroClearZones = [];
@@ -2727,23 +2856,22 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
         const near = nearestSample(x, z);
         const dist = Math.sqrt(near.distSq);
         const trackY = pos[near.idx].y - 0.65;
-        if (dist <= 32) return trackY;
-        const southSlope = THREE.MathUtils.clamp((z + 750) / 1700, 0, 1.3) * 34;
-        const westRidge = THREE.MathUtils.clamp((-x + 250) / 1400, 0, 1.2) * 14;
+        if (dist <= 28) return trackY;
+        const southSlope = THREE.MathUtils.clamp((z - 1200) / 4800, -0.2, 1.1) * 14;
         const hills =
-          Math.sin(x * 0.0032 + 0.6) * Math.cos(z * 0.0029) * 8.5 +
-          Math.sin(x * 0.0085 - z * 0.0062) * 3.8;
-        const farRise = Math.max(0, Math.hypot(x, z) - 980) * 0.045;
-        const baseY = -4 + southSlope + westRidge + hills + farRise;
-        if (dist >= 150) return baseY;
-        const sm = THREE.MathUtils.smoothstep((dist - 32) / 118, 0, 1);
+          Math.sin(x * 0.0022 + 0.6) * Math.cos(z * 0.0020) * 6.5 +
+          Math.sin(x * 0.0065 - z * 0.0052) * 3.0;
+        const farRise = Math.max(0, dist - 280) * 0.025;
+        const baseY = trackY + southSlope * 0.15 + hills * 0.35 + farRise;
+        if (dist >= 130) return baseY;
+        const sm = THREE.MathUtils.smoothstep((dist - 28) / 102, 0, 1);
         const lerpY = THREE.MathUtils.lerp(trackY, baseY, sm);
-        return dist < 76 ? Math.min(lerpY, trackY + (dist - 32) * 0.24) : lerpY;
+        return Math.min(lerpY, trackY + (dist - 28) * 0.18);
       };
 
-      const snapHeroSpot = (prog, side, centerDist, angleBias = 0.20) => {
-        const u = ((startU + prog) % 1 + 1) % 1;
-        const idx = Math.round(u * SAMPLE_COUNT) % SAMPLE_COUNT;
+      const snapHeroSpot = (uVal, side, centerDist, angleBias = 0.20) => {
+        const u = wrapU(uVal);
+        const idx = idxAtU(u);
         const p = pos[idx];
         const r = right[idx];
         const t = tan[idx];
@@ -2787,12 +2915,12 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
       });
 
       // ----------------------------------------------------------------------
-      // HERO 1: PASAR RAYA II SALATIGA (Jl. Jend. Sudirman, prog ~0.708, side 1)
-      // Front arcade & forecourt ~14m–16m outside road edge, building 42x14x24
+      // HERO 1: PASAR RAYA II SALATIGA (Jl. Jend. Sudirman, u ~0.082, side 1)
+      // Front arcade & forecourt outside Armco on Sudirman corridor
       // ----------------------------------------------------------------------
       {
-        const spot = snapHeroSpot(0.708, 1, 36.8, 0.16);
-        heroClearZones.push({ x: spot.x, z: spot.z, radSq: 44 * 44, uProg: 0.708, side: 1 });
+        const spot = snapHeroSpot(0.082, 1, roadHalfWidth + 27.5, 0.16);
+        heroClearZones.push({ x: spot.x, z: spot.z, radSq: 40 * 40, uProg: spot.u, side: 1 });
 
         const pasar = new THREE.Group();
         pasar.position.set(spot.x, spot.y, spot.z);
@@ -3060,12 +3188,12 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
       }
 
       // ----------------------------------------------------------------------
-      // HERO 2: BUNDARAN TAMANSARI & TUGU JAM (prog ~0.768, outer bend side 1)
+      // HERO 2: BUNDARAN TAMANSARI & TUGU JAM (near route start, u ~startU + 0.020)
       // Circular manicured island (r ~7.2m), red/white curb, glowing 4-face Tugu Jam
       // ----------------------------------------------------------------------
       {
-        const spot = snapHeroSpot(0.768, 1, 23.6, 0.24);
-        heroClearZones.push({ x: spot.x, z: spot.z, radSq: 24 * 24, uProg: 0.768, side: 1 });
+        const spot = snapHeroSpot(startU + 0.020, 1, roadHalfWidth + 16.5, 0.24);
+        heroClearZones.push({ x: spot.x, z: spot.z, radSq: 22 * 22, uProg: spot.u, side: 1 });
 
         const tamansari = new THREE.Group();
         tamansari.position.set(spot.x, spot.y, spot.z);
@@ -3271,384 +3399,6 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
         scene.add(tamansari);
       }
 
-      // ----------------------------------------------------------------------
-      // HERO 3: RUMAH DINAS WALI KOTA SALATIGA (Jl. Diponegoro, prog ~0.828, side -1)
-      // Dutch-Indies Colonial White Mansion, Doric portico, green shutters, Merah-Putih
-      // ----------------------------------------------------------------------
-      {
-        const spot = snapHeroSpot(0.828, -1, 35.2, 0.22);
-        heroClearZones.push({ x: spot.x, z: spot.z, radSq: 38 * 38, uProg: 0.828, side: -1 });
-
-        const rumdin = new THREE.Group();
-        rumdin.position.set(spot.x, spot.y, spot.z);
-        rumdin.rotation.y = spot.yaw;
-
-        const colonialFacadeTex = makeHiResTex(1024, 512, (g, w, h) => {
-          g.fillStyle = '#f8fafc';
-          g.fillRect(0, 0, w, h);
-          // Classical base stone plinth & cornice
-          g.fillStyle = '#cbd5e1';
-          g.fillRect(0, h - 56, w, 56);
-          g.fillStyle = '#e2e8f0';
-          g.fillRect(0, 0, w, 34);
-          // Symmetrical arched colonial windows with dark green wooden shutters
-          const winXs = [72, 198, 324, 610, 736, 862];
-          for (const wx of winXs) {
-            // Left & right dark green shutters
-            g.fillStyle = '#14532d';
-            g.fillRect(wx - 22, 136, 22, 240);
-            g.fillRect(wx + 90, 136, 22, 240);
-            // Louver detail on shutters
-            g.fillStyle = '#166534';
-            for (let sy = 148; sy < 368; sy += 16) {
-              g.fillRect(wx - 19, sy, 16, 6);
-              g.fillRect(wx + 93, sy, 16, 6);
-            }
-            // Arched top fanlight + dark glazed sash
-            g.fillStyle = '#1e293b';
-            g.beginPath();
-            g.arc(wx + 45, 146, 45, Math.PI, 0);
-            g.fill();
-            g.fillRect(wx, 146, 90, 232);
-            // White mullions
-            g.fillStyle = '#f8fafc';
-            g.fillRect(wx + 42, 102, 6, 276);
-            g.fillRect(wx, 200, 90, 6);
-            g.fillRect(wx, 286, 90, 6);
-          }
-          // Grand central double arched doorway
-          const dx = 452;
-          g.fillStyle = '#451a03';
-          g.beginPath();
-          g.arc(dx + 60, 162, 60, Math.PI, 0);
-          g.fill();
-          g.fillRect(dx, 162, 120, 294);
-          g.fillStyle = '#fde68a';
-          g.beginPath();
-          g.arc(dx + 60, 162, 46, Math.PI, 0);
-          g.fill();
-        });
-
-        const gateSignTex = makeHiResTex(1024, 224, (g, w, h) => {
-          g.fillStyle = '#f8fafc';
-          g.fillRect(0, 0, w, h);
-          g.strokeStyle = '#14532d';
-          g.lineWidth = 12;
-          g.strokeRect(10, 10, w - 20, h - 20);
-          g.fillStyle = '#14532d';
-          g.font = '900 78px "Titillium Web", sans-serif';
-          g.textAlign = 'center';
-          g.textBaseline = 'middle';
-          g.fillText('RUMAH DINAS WALI KOTA', w / 2, h * 0.42);
-          g.fillStyle = '#b91c1c';
-          g.font = '700 32px "Titillium Web", sans-serif';
-          g.fillText('PEMERINTAH KOTA SALATIGA', w / 2, h * 0.78);
-        });
-
-        const whiteStuccoMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.65 });
-        const shutterGreenMat = new THREE.MeshStandardMaterial({ color: 0x14532d, roughness: 0.58 });
-        const facadeColonialMat = new THREE.MeshStandardMaterial({ map: colonialFacadeTex, roughness: 0.68 });
-        const lawnMat = new THREE.MeshStandardMaterial({ color: 0x357a34, roughness: 0.9 });
-        const driveMat = new THREE.MeshStandardMaterial({ color: 0xd6d3d1, roughness: 0.85 });
-        const gateSignMat = new THREE.MeshStandardMaterial({
-          map: gateSignTex,
-          emissiveMap: gateSignTex,
-          emissive: 0xffffff,
-          emissiveIntensity: 0.34,
-          roughness: 0.38,
-        });
-
-        // Deep foundation & manicured front lawn + driveway
-        const plinth = new THREE.Mesh(
-          new THREE.BoxGeometry(38, 4.2, 27),
-          new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.88 })
-        );
-        plinth.position.set(0, -2.0, 0);
-        const lawn = new THREE.Mesh(new THREE.BoxGeometry(36.5, 0.38, 25.5), lawnMat);
-        lawn.position.set(0, 0.16, 0);
-        const driveway = new THREE.Mesh(new THREE.BoxGeometry(6.2, 0.42, 13.5), driveMat);
-        driveway.position.set(0, 0.17, 6.2);
-
-        // Colonial Mansion Core (27m wide x 6.4m wall x 13.5m deep) centered at z = -4.2
-        const manorPlinth = new THREE.Mesh(new THREE.BoxGeometry(28.5, 1.0, 15.0), driveMat);
-        manorPlinth.position.set(0, 0.65, -4.2);
-        const manorBody = new THREE.Mesh(new THREE.BoxGeometry(27.0, 5.8, 13.4), facadeColonialMat);
-        manorBody.position.set(0, 4.0, -4.2);
-
-        // 3D Projecting Green Shutters flanking front windows for deep relief shadows
-        for (const wx of [-11.0, -7.8, -4.6, 4.6, 7.8, 11.0]) {
-          const sLeft = new THREE.Mesh(new THREE.BoxGeometry(0.45, 2.7, 0.18), shutterGreenMat);
-          sLeft.position.set(wx - 0.72, 3.85, 2.58);
-          const sRight = new THREE.Mesh(new THREE.BoxGeometry(0.45, 2.7, 0.18), shutterGreenMat);
-          sRight.position.set(wx + 0.72, 3.85, 2.58);
-          rumdin.add(sLeft, sRight);
-        }
-
-        // Steep Terracotta-Red Limasan Hipped Roof + Ridge Finials
-        const mainRoof = new THREE.Mesh(new THREE.ConeGeometry(19.5, 4.4, 4), heroRoofTileMat);
-        mainRoof.rotation.y = Math.PI / 4;
-        mainRoof.scale.set(1.24, 1.0, 0.72);
-        mainRoof.position.set(0, 9.0, -4.2);
-
-        const upperLimasan = new THREE.Mesh(new THREE.ConeGeometry(8.2, 3.0, 4), heroRoofTileMat);
-        upperLimasan.rotation.y = Math.PI / 4;
-        upperLimasan.scale.set(1.3, 1.0, 0.7);
-        upperLimasan.position.set(0, 11.3, -4.2);
-
-        // Grand Front Portico with 6 White Doric Columns + Classical Pediment
-        const porticoDeck = new THREE.Mesh(new THREE.BoxGeometry(11.4, 0.95, 5.4), driveMat);
-        porticoDeck.position.set(0, 0.65, 4.5);
-        const colGeo = new THREE.CylinderGeometry(0.24, 0.31, 5.2, 12);
-        const capGeo = new THREE.BoxGeometry(0.8, 0.35, 0.8);
-        for (const cx of [-4.6, -2.75, -0.95, 0.95, 2.75, 4.6]) {
-          const col = new THREE.Mesh(colGeo, whiteStuccoMat);
-          col.position.set(cx, 3.7, 6.5);
-          const colCap = new THREE.Mesh(capGeo, whiteStuccoMat);
-          colCap.position.set(cx, 6.25, 6.5);
-          rumdin.add(col, colCap);
-        }
-        const entablature = new THREE.Mesh(new THREE.BoxGeometry(11.2, 0.75, 5.2), whiteStuccoMat);
-        entablature.position.set(0, 6.65, 4.4);
-
-        const pedShape = new THREE.Shape();
-        pedShape.moveTo(-5.8, 0);
-        pedShape.lineTo(5.8, 0);
-        pedShape.lineTo(0, 2.4);
-        pedShape.closePath();
-        const pedGeo = new THREE.ExtrudeGeometry(pedShape, { depth: 4.8, bevelEnabled: false });
-        const pediment = new THREE.Mesh(pedGeo, whiteStuccoMat);
-        pediment.position.set(0, 7.0, 2.0);
-        const porticoRoof = new THREE.Mesh(new THREE.ConeGeometry(6.6, 2.5, 4), heroRoofTileMat);
-        porticoRoof.rotation.y = Math.PI / 4;
-        porticoRoof.scale.set(1.2, 1.0, 0.78);
-        porticoRoof.position.set(0, 8.2, 4.4);
-
-        // Indonesian Merah-Putih Flagpole on Front Lawn
-        const flagPole = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.08, 0.13, 10.6, 8),
-          new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.75, roughness: 0.25 })
-        );
-        flagPole.position.set(-8.6, 5.4, 8.8);
-        const flagRed = new THREE.Mesh(
-          new THREE.BoxGeometry(2.6, 0.85, 0.08),
-          new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.55 })
-        );
-        flagRed.position.set(-7.25, 9.95, 8.8);
-        const flagWhite = new THREE.Mesh(
-          new THREE.BoxGeometry(2.6, 0.85, 0.08),
-          new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.55 })
-        );
-        flagWhite.position.set(-7.25, 9.1, 8.8);
-
-        // White Perimeter Low Fence & Entrance Gate Sign ("RUMAH DINAS WALI KOTA")
-        for (const fx of [-12.2, 12.2]) {
-          const wall = new THREE.Mesh(new THREE.BoxGeometry(11.6, 1.4, 0.55), whiteStuccoMat);
-          wall.position.set(fx, 0.9, 12.2);
-          rumdin.add(wall);
-        }
-        for (const px of [-6.0, 6.0]) {
-          const pier = new THREE.Mesh(new THREE.BoxGeometry(1.1, 3.6, 1.1), whiteStuccoMat);
-          pier.position.set(px, 1.9, 12.2);
-          const lantern = new THREE.Mesh(
-            new THREE.SphereGeometry(0.32, 8, 6),
-            new THREE.MeshStandardMaterial({ color: 0xfef3c7, emissive: 0xfbbf24, emissiveIntensity: 0.9 })
-          );
-          lantern.position.set(px, 3.95, 12.2);
-          rumdin.add(pier, lantern);
-        }
-        const gateArch = new THREE.Mesh(new THREE.BoxGeometry(13.2, 1.85, 0.55), whiteStuccoMat);
-        gateArch.position.set(0, 3.95, 12.2);
-        const gateSign = new THREE.Mesh(new THREE.PlaneGeometry(12.2, 1.6), gateSignMat);
-        gateSign.position.set(0, 3.95, 12.5);
-
-        rumdin.add(
-          plinth,
-          lawn,
-          driveway,
-          manorPlinth,
-          manorBody,
-          mainRoof,
-          upperLimasan,
-          porticoDeck,
-          entablature,
-          pediment,
-          porticoRoof,
-          flagPole,
-          flagRed,
-          flagWhite,
-          gateArch,
-          gateSign
-        );
-        enableShadows(rumdin, true, true);
-        scene.add(rumdin);
-      }
-
-      // ----------------------------------------------------------------------
-      // HERO 4: GERBANG KAMPUS UKSW (Jl. Diponegoro, prog ~0.888, side -1)
-      // Wide campus entrance archway + "KAMPUS UKSW SALATIGA" + Balairung hall
-      // ----------------------------------------------------------------------
-      {
-        const spot = snapHeroSpot(0.888, -1, 38.0, 0.20);
-        heroClearZones.push({ x: spot.x, z: spot.z, radSq: 44 * 44, uProg: 0.888, side: -1 });
-
-        const uksw = new THREE.Group();
-        uksw.position.set(spot.x, spot.y, spot.z);
-        uksw.rotation.y = spot.yaw;
-
-        const ukswSignTex = makeHiResTex(1024, 256, (g, w, h) => {
-          const grad = g.createLinearGradient(0, 0, w, 0);
-          grad.addColorStop(0, '#1e3a8a');
-          grad.addColorStop(0.5, '#1d4ed8');
-          grad.addColorStop(1, '#1e3a8a');
-          g.fillStyle = grad;
-          g.fillRect(0, 0, w, h);
-          // Crisp white horizontal borders & emblem medallion
-          g.fillStyle = '#ffffff';
-          g.fillRect(0, 0, w, 16);
-          g.fillRect(0, h - 16, w, 16);
-          g.strokeStyle = '#93c5fd';
-          g.lineWidth = 4;
-          g.strokeRect(20, 26, w - 40, h - 52);
-
-          // UKSW Crest Badge on Left
-          g.fillStyle = '#ffffff';
-          g.beginPath();
-          g.arc(110, h / 2, 62, 0, Math.PI * 2);
-          g.fill();
-          g.fillStyle = '#1e3a8a';
-          g.beginPath();
-          g.arc(110, h / 2, 50, 0, Math.PI * 2);
-          g.fill();
-          g.fillStyle = '#facc15';
-          g.font = '900 34px "Titillium Web", sans-serif';
-          g.textAlign = 'center';
-          g.textBaseline = 'middle';
-          g.fillText('UKSW', 110, h / 2);
-
-          // Main Title
-          g.fillStyle = '#ffffff';
-          g.font = '900 84px "Titillium Web", sans-serif';
-          g.fillText('KAMPUS UKSW SALATIGA', w * 0.56, h * 0.44);
-          g.fillStyle = '#dbeafe';
-          g.font = '700 30px "Titillium Web", sans-serif';
-          g.fillText('UNIVERSITAS KRISTEN SATYA WACANA · JL. DIPONEGORO', w * 0.56, h * 0.77);
-        });
-
-        const stoneMat = new THREE.MeshStandardMaterial({ color: 0xf1ede4, roughness: 0.68 });
-        const ukswBlueMat = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.42, metalness: 0.12 });
-        const glassMat = new THREE.MeshStandardMaterial({ color: 0x1e3a5f, roughness: 0.18, metalness: 0.58 });
-        const plazaMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.84 });
-        const ukswSignMat = new THREE.MeshStandardMaterial({
-          map: ukswSignTex,
-          emissiveMap: ukswSignTex,
-          emissive: 0xffffff,
-          emissiveIntensity: 0.48,
-          roughness: 0.3,
-        });
-
-        // Broad stepped plaza & deep foundation
-        const plinth = new THREE.Mesh(
-          new THREE.BoxGeometry(56, 4.6, 36),
-          new THREE.MeshStandardMaterial({ color: 0x52525b, roughness: 0.9 })
-        );
-        plinth.position.set(0, -2.15, -1);
-        const plaza = new THREE.Mesh(new THREE.BoxGeometry(54, 0.5, 34), plazaMat);
-        plaza.position.set(0, 0.25, -1);
-
-        // Wide Iconic Campus Entrance Archway at trackside front (z = +14.6 => ~23.4m from centerline)
-        for (const sx of [-9.4, 9.4]) {
-          const pylon = new THREE.Mesh(new THREE.BoxGeometry(2.8, 7.6, 2.4), stoneMat);
-          pylon.position.set(sx, 3.8, 14.6);
-          const blueStrip = new THREE.Mesh(new THREE.BoxGeometry(2.95, 7.2, 0.55), ukswBlueMat);
-          blueStrip.position.set(sx, 3.8, 15.65);
-          uksw.add(pylon, blueStrip);
-        }
-        const archBeam = new THREE.Mesh(new THREE.BoxGeometry(22.4, 2.8, 2.6), ukswBlueMat);
-        archBeam.position.set(0, 6.8, 14.6);
-        const archRoof = new THREE.Mesh(new THREE.BoxGeometry(23.6, 0.45, 3.4), stoneMat);
-        archRoof.position.set(0, 8.35, 14.6);
-        const archSign = new THREE.Mesh(new THREE.PlaneGeometry(19.6, 2.45), ukswSignMat);
-        archSign.position.set(0, 6.8, 15.92);
-
-        // Low Blue-and-White Monument Sign Wall right beside the gate for low driver eye-level
-        const monWall = new THREE.Mesh(new THREE.BoxGeometry(10.6, 2.2, 1.1), stoneMat);
-        monWall.position.set(16.2, 1.2, 14.6);
-        const monSign = new THREE.Mesh(new THREE.PlaneGeometry(9.8, 1.9), ukswSignMat);
-        monSign.position.set(16.2, 1.25, 15.18);
-
-        // Grand Balairung / Notohamidjojo Academic Hall Set Back at z = -6.5
-        const centerHall = new THREE.Mesh(new THREE.BoxGeometry(24, 12.2, 15), stoneMat);
-        centerHall.position.set(0, 6.5, -6.5);
-        const centerGlass = new THREE.Mesh(new THREE.BoxGeometry(20, 8.8, 15.4), glassMat);
-        centerGlass.position.set(0, 6.7, -6.5);
-        const hallRoof = new THREE.Mesh(new THREE.ConeGeometry(18.5, 4.4, 4), heroRoofTileMat);
-        hallRoof.rotation.y = Math.PI / 4;
-        hallRoof.scale.set(1.22, 1.0, 0.82);
-        hallRoof.position.set(0, 14.6, -6.5);
-
-        for (const sx of [-19, 19]) {
-          const wing = new THREE.Mesh(new THREE.BoxGeometry(13.5, 9.2, 20), stoneMat);
-          wing.position.set(sx, 5.0, -5.0);
-          const wGlass = new THREE.Mesh(new THREE.BoxGeometry(13.8, 5.8, 16), glassMat);
-          wGlass.position.set(sx, 5.2, -5.0);
-          const wBand = new THREE.Mesh(new THREE.BoxGeometry(14.0, 0.75, 20.4), ukswBlueMat);
-          wBand.position.set(sx, 9.7, -5.0);
-          uksw.add(wing, wGlass, wBand);
-        }
-
-        // UKSW Clock / Bell Tower Spire
-        const tower = new THREE.Mesh(new THREE.BoxGeometry(4.2, 20.5, 4.2), stoneMat);
-        tower.position.set(-10.5, 10.6, -13.5);
-        const towerClock = new THREE.Mesh(
-          new THREE.BoxGeometry(4.45, 2.2, 4.45),
-          new THREE.MeshStandardMaterial({
-            color: 0xfef08a,
-            emissive: 0xfacc15,
-            emissiveIntensity: 0.72,
-            roughness: 0.25,
-          })
-        );
-        towerClock.position.set(-10.5, 18.6, -13.5);
-        const towerCap = new THREE.Mesh(new THREE.ConeGeometry(3.5, 4.2, 4), ukswBlueMat);
-        towerCap.rotation.y = Math.PI / 4;
-        towerCap.position.set(-10.5, 22.9, -13.5);
-
-        // Flanking Campus Royal Palms framing the entrance cleanly
-        const palmTrunkMat = new THREE.MeshStandardMaterial({ color: 0x6b5344, roughness: 0.9 });
-        const palmLeafMat = new THREE.MeshStandardMaterial({ color: 0x2e7d32, roughness: 0.75 });
-        for (const [px, pz, h] of [[-14.2, 11.2, 8.2], [-18.5, 9.5, 9.4], [22.8, 10.5, 8.8], [26.2, 8.5, 7.9]]) {
-          const pTrunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.34, h, 7), palmTrunkMat);
-          pTrunk.position.set(px, h * 0.5, pz);
-          uksw.add(pTrunk);
-          for (let fi = 0; fi < 5; fi++) {
-            const frond = new THREE.Mesh(new THREE.ConeGeometry(0.95, 3.6, 5), palmLeafMat);
-            const ang = (fi / 5) * Math.PI * 2;
-            frond.position.set(px + Math.cos(ang) * 1.1, h + 0.15, pz + Math.sin(ang) * 1.1);
-            frond.rotation.z = -Math.cos(ang) * 1.15;
-            frond.rotation.x = Math.sin(ang) * 1.15;
-            uksw.add(frond);
-          }
-        }
-
-        uksw.add(
-          plinth,
-          plaza,
-          archBeam,
-          archRoof,
-          archSign,
-          monWall,
-          monSign,
-          centerHall,
-          centerGlass,
-          hallRoof,
-          tower,
-          towerClock,
-          towerCap
-        );
-        enableShadows(uksw, true, true);
-        scene.add(uksw);
-      }
-
       return heroClearZones;
     };
 
@@ -3658,7 +3408,7 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
       const crowdCoords = [];
       for (let gsIdx = 0; gsIdx < spots.length; gsIdx++) {
         const spot = spots[gsIdx];
-        const idx = Math.round(spot.u * SAMPLE_COUNT) % SAMPLE_COUNT;
+        const idx = idxAtU(wrapU(spot.u));
         const p = pos[idx];
         const r = right[idx];
         const gx = p.x + r.x * spot.side * spot.dist;
@@ -3745,8 +3495,11 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
       right,
       tan,
       SAMPLE_COUNT,
-      HALF_WIDTH,
+      HALF_WIDTH: roadHalfWidth,
+      totalLength,
+      closedLoop,
       startU,
+      finishLineU,
       drsZones,
       nearestSample,
       envTime,
@@ -5197,7 +4950,9 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   // --- Trackside Repair Coins / Aero-Repair Tokens ---
   const tokenSpots = isSalatiga
     ? Array.from({ length: 18 }, (_, i) => ({
-        u: (startU + (i + 0.5) / 18) % 1,
+        u: closedLoop
+          ? (startU + (i + 0.5) / 18) % 1
+          : startU + 0.03 + (i / 17) * Math.max(0.1, finishLineU - startU - 0.06),
         lat: (i % 2 === 0 ? -1 : 1) * 2.2,
       }))
     : [
@@ -5249,10 +5004,10 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
   });
 
   const repairTokens = tokenSpots.map((sp, i) => {
-    const idx = Math.round(sp.u * SAMPLE_COUNT) % SAMPLE_COUNT;
+    const idx = idxAtU(sp.u);
     const p = pos[idx];
     const r = right[idx];
-    const lat = THREE.MathUtils.clamp(sp.lat, -(HALF_WIDTH - 2.6), HALF_WIDTH - 2.6);
+    const lat = THREE.MathUtils.clamp(sp.lat, -(roadHalfWidth - 2.6), roadHalfWidth - 2.6);
     const tx = p.x + r.x * lat;
     const ty = p.y;
     const tz = p.z + r.z * lat;
@@ -5288,18 +5043,23 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
     };
   });
 
-  // Checkpoints (checkpoints[0] MUST align with startFinishLine.u)
-  const checkpoints = cfg.checkpoints.map((cp) => ({
-    u: uAtPoint(points[cp.pointIndex]),
+  // Checkpoints (checkpoints[0] MUST align with startFinishLine.u; last aligns with finishLineU on stage)
+  const checkpoints = cfg.checkpoints.map((cp, ci) => ({
+    u:
+      !closedLoop && ci === cfg.checkpoints.length - 1
+        ? finishLineU
+        : uAtPoint(points[cp.pointIndex]),
     name: cp.name,
   }));
 
   const trackCurve = {
     userData: {
       circuitId: cfg.id,
+      closedLoop,
+      totalLaps: cfg.totalLaps,
       samples,
       length: totalLength,
-      halfWidth: HALF_WIDTH,
+      halfWidth: roadHalfWidth,
       waterMaterial,
       mountainMistUniform,
       asphaltMaterial: asphaltMat,
@@ -5312,9 +5072,12 @@ export function buildTrack(scene, circuitId = 'monaco-gp', options = {}) {
 
   return {
     circuitId: cfg.id,
+    closedLoop,
+    totalLaps: cfg.totalLaps,
     playerTeam: cfg.playerTeam,
     trackCurve,
-    startFinishLine: { u: startU, lights: gantryLights, poleLeadU, gridStepU },
+    startFinishLine: { u: startU, finishU: finishLineU, lights: gantryLights, poleLeadU, gridStepU },
+    finishLineU,
     drsZones,
     checkpoints,
     repairTokens,

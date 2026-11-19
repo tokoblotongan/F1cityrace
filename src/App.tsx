@@ -305,6 +305,29 @@ function CircuitSvgMap({ config, selected }: { config: CircuitConfig; selected: 
         strokeWidth="1.2"
       />
 
+      {/* Gold Finish marker for point-to-point open stages */}
+      {!svgData.isClosed && svgData.finishDot && (
+        <g>
+          <circle
+            cx={svgData.finishDot.x}
+            cy={svgData.finishDot.y}
+            r="5.2"
+            fill="none"
+            stroke="#facc15"
+            strokeWidth="1.3"
+            strokeOpacity="0.85"
+          />
+          <circle
+            cx={svgData.finishDot.x}
+            cy={svgData.finishDot.y}
+            r="3.2"
+            fill="#facc15"
+            stroke="#0b0f16"
+            strokeWidth="1"
+          />
+        </g>
+      )}
+
       {/* Corner & Landmark Annotations */}
       {svgData.markers.map((m, idx) => (
         <g key={idx}>
@@ -596,7 +619,10 @@ export default function App() {
           </header>
           <div id="tower-rows" />
           <footer id="tower-foot">
-            {activeCircuit.circuitTitle} · <span id="tower-laps">3 LAPS</span>
+            {activeCircuit.circuitTitle} ·{' '}
+            <span id="tower-laps">
+              {activeCircuit.totalLaps === 1 ? `1 STAGE · ${activeCircuit.lengthLabel}` : `${activeCircuit.totalLaps} LAPS`}
+            </span>
           </footer>
         </section>
 
@@ -610,9 +636,9 @@ export default function App() {
             </button>
           </header>
           <div id="lap-count">
-            LAP <span id="lap-current">1</span>
+            {activeCircuit.totalLaps === 1 ? 'STAGE' : 'LAP'} <span id="lap-current">1</span>
             <span className="lap-sep">/</span>
-            <span id="lap-total">3</span>
+            <span id="lap-total">{activeCircuit.totalLaps}</span>
           </div>
           <div className="timer-row">
             <label>CURRENT</label>
@@ -916,7 +942,10 @@ export default function App() {
           <div id="confetti" aria-hidden="true" />
           <div id="finish-kicker">CHEQUERED FLAG · {activeCircuit.gpTitle}</div>
           <h1 id="finish-title">VICTORY</h1>
-          <div id="finish-sub">{activeCircuit.circuitTitle} · 3 LAPS</div>
+          <div id="finish-sub">
+            {activeCircuit.circuitTitle} ·{' '}
+            {activeCircuit.totalLaps === 1 ? `${activeCircuit.lengthLabel} STAGE` : `${activeCircuit.totalLaps} LAPS`}
+          </div>
           <div id="podium" />
 
           {/* Podium Name Entry Form (only when playerPosition <= 3 and finished full race) */}
@@ -1025,8 +1054,10 @@ export default function App() {
           <div id="gameover-sub">CHASSIS INTEGRITY FAILED · RETIRED FROM RACE</div>
           <div id="dnf-stats">
             <div className="dnf-stat">
-              <label>LAP REACHED</label>
-              <span id="dnf-lap" className="mono">LAP 1 / 3</span>
+              <label>{activeCircuit.totalLaps === 1 ? 'STAGE PROGRESS' : 'LAP REACHED'}</label>
+              <span id="dnf-lap" className="mono">
+                {activeCircuit.totalLaps === 1 ? 'STAGE 1 / 1' : `LAP 1 / ${activeCircuit.totalLaps}`}
+              </span>
             </div>
             <div className="dnf-stat">
               <label>SURVIVAL TIME</label>
@@ -1084,7 +1115,8 @@ export default function App() {
           <div className="w-full max-w-[840px] max-h-[94vh] overflow-y-auto rounded-2xl bg-[#0b0f16]/92 border border-white/18 border-t-[3px] border-t-[#e10600] px-4 py-4 sm:px-6 sm:py-5 shadow-[0_28px_80px_rgba(0,0,0,0.78)] text-[#f2efe6]">
             <div className="text-center">
               <div className="inline-flex items-center gap-2 px-3 py-0.5 rounded bg-[#e10600]/15 border border-[#e10600]/45 text-[10px] font-black tracking-[0.26em] text-[#ff6a55]">
-                {activeCircuit.circuitTitle} · {activeCircuit.lengthLabel} · 3 LAPS · 8 CARS
+                {activeCircuit.circuitTitle} · {activeCircuit.lengthLabel} ·{' '}
+                {activeCircuit.totalLaps === 1 ? '1 STAGE · POINT-TO-POINT' : `${activeCircuit.totalLaps} LAPS`} · 8 CARS
               </div>
               <h1
                 id="start-title"

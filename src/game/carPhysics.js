@@ -1194,12 +1194,18 @@ export function resetCarHealth(car) {
   P.scrapeTimer = 0;
 }
 
-function findNearestIndex(posArr, x, z, hintIdx, N) {
-  let best = hintIdx % N;
+function findNearestIndex(posArr, x, z, hintIdx, N, closedLoop = true) {
+  let best = closedLoop ? ((hintIdx % N) + N) % N : clamp(hintIdx, 0, N - 1);
   let bestD = Infinity;
   const win = 40;
   for (let o = -win; o <= win; o++) {
-    const idx = (hintIdx + o + N) % N;
+    let idx;
+    if (closedLoop) {
+      idx = ((hintIdx + o) % N + N) % N;
+    } else {
+      idx = hintIdx + o;
+      if (idx < 0 || idx >= N) continue;
+    }
     const dx = posArr[idx].x - x;
     const dz = posArr[idx].z - z;
     const d = dx * dx + dz * dz;
@@ -1240,15 +1246,34 @@ export function clampCarToTrack(car, trackData, dt = 0, isSeparationPass = false
   const P = car.userData.physics;
   const sd = trackData.trackCurve.userData.samples;
   const N = sd.count;
+  const closedLoop = trackData.trackCurve.userData.closedLoop !== false;
+  const uDenom = closedLoop ? N : Math.max(1, N - 1);
   const halfWidth = trackData.trackCurve.userData.halfWidth;
 
-  const idx = findNearestIndex(sd.pos, car.position.x, car.position.z, P.lastIdx, N);
+  const idx = findNearestIndex(sd.pos, car.position.x, car.position.z, P.lastIdx, N, closedLoop);
   P.lastIdx = idx;
-  P.u = idx / N;
+  P.u = idx / uDenom;
 
   const p = sd.pos[idx];
   const r = sd.right[idx];
   const t = sd.tan[idx];
+
+  if (!closedLoop && (idx === 0 || idx === N - 1)) {
+    const longit = (car.position.x - p.x) * t.x + (car.position.z - p.z) * t.z;
+    const invHoriz = 1 / Math.max(1e-4, Math.hypot(t.x, t.z));
+    if (idx === 0 && longit < 2.2) {
+      const push = 2.2 - longit;
+      car.position.x += t.x * invHoriz * push;
+      car.position.z += t.z * invHoriz * push;
+      P.speed = Math.min(P.speed, 4);
+    } else if (idx === N - 1 && longit > -2.5) {
+      const push = -2.5 - longit;
+      car.position.x += t.x * invHoriz * push;
+      car.position.z += t.z * invHoriz * push;
+      P.speed = 0;
+      P.latVel = 0;
+    }
+  }
 
   _delta.set(car.position.x - p.x, 0, car.position.z - p.z);
   const lateral = _delta.dot(r);
@@ -1315,10 +1340,16 @@ export function updateCarPhysics(car, controls, trackData, dt) {
   const parts = car.userData.parts;
   const sd = trackData.trackCurve.userData.samples;
   const N = sd.count;
+  const closedLoop = trackData.trackCurve.userData.closedLoop !== false;
+  const uDenom = closedLoop ? N : Math.max(1, N - 1);
   const halfWidth = trackData.trackCurve.userData.halfWidth;
 
   if (controls?.reset || !P.initialized) {
-    const resetIdx = P.initialized ? P.lastIdx : Math.round(trackData.startFinishLine.u * N) % N;
+    const resetIdx = P.initialized
+      ? clamp(P.lastIdx, 0, N - 1)
+      : closedLoop
+        ? Math.round(trackData.startFinishLine.u * N) % N
+        : clamp(Math.round(trackData.startFinishLine.u * uDenom), 0, N - 1);
     const p = sd.pos[resetIdx];
     const t = sd.tan[resetIdx];
     car.position.set(p.x, p.y, p.z);
@@ -1333,7 +1364,7 @@ export function updateCarPhysics(car, controls, trackData, dt) {
     P.steerVis = 0;
     P.brakeHeat = 0;
     P.lastIdx = resetIdx;
-    P.u = resetIdx / N;
+    P.u = resetIdx / uDenom;
     P.yaw = Math.atan2(-t.x, -t.z);
     P.initialized = true;
     if (controls?.fullReset) {
